@@ -119,6 +119,107 @@ esp_err_t api_client_register_device(const char* device_id, const char* token, a
     return err;
 }
 
+esp_err_t api_client_get_home_data(const char* device_id, const char* token, home_data_t* home_data, api_response_t* response)
+{
+    if (!device_id || !token || !home_data || !response) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    memset(response, 0, sizeof(api_response_t));
+    memset(home_data, 0, sizeof(home_data_t));
+    memset(response_buffer, 0, sizeof(response_buffer));
+    
+    char url[256];
+    snprintf(url, sizeof(url), "%s/home", API_BASE_URL);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .event_handler = _http_event_handler,
+        .user_data = response_buffer,
+        .timeout_ms = 5000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    char auth_header[300];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    
+    esp_err_t err = esp_http_client_perform(client);
+    
+    if (err == ESP_OK) {
+        int status_code = esp_http_client_get_status_code(client);
+        response->status_code = status_code;
+        
+        if (status_code == 200) {
+            cJSON *json = cJSON_Parse(response_buffer);
+            if (json) {
+                cJSON *current_time = cJSON_GetObjectItem(json, "currentTime");
+                if (current_time && cJSON_IsString(current_time)) {
+                    strncpy(home_data->current_time, current_time->valuestring, sizeof(home_data->current_time) - 1);
+                }
+                
+                cJSON *weather = cJSON_GetObjectItem(json, "weather");
+                if (weather && cJSON_IsString(weather)) {
+                    strncpy(home_data->weather_info, weather->valuestring, sizeof(home_data->weather_info) - 1);
+                }
+                
+                cJSON *temperature = cJSON_GetObjectItem(json, "temperature");
+                if (temperature && cJSON_IsString(temperature)) {
+                    strncpy(home_data->temperature, temperature->valuestring, sizeof(home_data->temperature) - 1);
+                }
+                
+                cJSON *humidity = cJSON_GetObjectItem(json, "humidity");
+                if (humidity && cJSON_IsString(humidity)) {
+                    strncpy(home_data->humidity, humidity->valuestring, sizeof(home_data->humidity) - 1);
+                }
+                
+                cJSON *sleep_score = cJSON_GetObjectItem(json, "sleepScore");
+                if (sleep_score && cJSON_IsString(sleep_score)) {
+                    strncpy(home_data->sleep_score, sleep_score->valuestring, sizeof(home_data->sleep_score) - 1);
+                }
+                
+                cJSON *noise_level = cJSON_GetObjectItem(json, "noiseLevel");
+                if (noise_level && cJSON_IsString(noise_level)) {
+                    strncpy(home_data->noise_level, noise_level->valuestring, sizeof(home_data->noise_level) - 1);
+                }
+                
+                cJSON *alarm_time = cJSON_GetObjectItem(json, "alarmTime");
+                if (alarm_time && cJSON_IsString(alarm_time)) {
+                    strncpy(home_data->alarm_time, alarm_time->valuestring, sizeof(home_data->alarm_time) - 1);
+                }
+                
+                cJSON *status = cJSON_GetObjectItem(json, "status");
+                if (status && cJSON_IsString(status)) {
+                    strncpy(home_data->status_message, status->valuestring, sizeof(home_data->status_message) - 1);
+                }
+                
+                cJSON_Delete(json);
+                
+                response->success = true;
+                strncpy(response->message, "Home data received successfully", sizeof(response->message) - 1);
+            } else {
+                response->success = false;
+                strncpy(response->message, "Invalid JSON response", sizeof(response->message) - 1);
+            }
+        } else {
+            response->success = false;
+            snprintf(response->message, sizeof(response->message), "HTTP error: %d", status_code);
+        }
+        
+        ESP_LOGI(TAG, "Home data response: %d", status_code);
+    } else {
+        response->success = false;
+        snprintf(response->message, sizeof(response->message), "HTTP request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Home data request failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    
+    return err;
+}
+
 esp_err_t api_client_send_heartbeat(const char* device_id, const char* token, api_response_t* response)
 {
     if (!device_id || !token || !response) {

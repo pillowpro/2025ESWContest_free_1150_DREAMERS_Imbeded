@@ -2,6 +2,17 @@
 
 ESP32-C6 기반 IoT 디바이스용 WiFi 프로비저닝 및 클라우드 연동 펌웨어
 
+**하드웨어 구성:**
+- ESP32-C6 개발보드
+- NEXTION HMI 디스플레이 (UART1 - RX:13, TX:12)
+
+**주요 기능:**
+- WiFi 자동 구성 (프로비저닝)
+- NEXTION HMI 실시간 정보 표시
+- 클라우드 백엔드 연동
+- 기기 등록 및 하트비트 전송
+- 웹 기반 설정 인터페이스
+
 ## 프로젝트 구조
 
 ```
@@ -60,8 +71,14 @@ BaegaePro-firmware/
 - SSID: `BaeGaePRO-{4자리 MAC}`
 - 비밀번호: `{4자리 MAC}PSWR`
 - 웹 인터페이스를 통한 WiFi 설정
+- NEXTION 디스플레이에 설정 안내 표시
 
-### 2. 기기 등록
+### 2. NEXTION HMI 상호작용
+- **Page 0**: 설정/연결 모드 - 초기 설정 안내 메시지
+- **Page 1**: 홈 모드 - 실시간 정보 표시 (온도, 날씨, 수면점수, 소음, 알람)
+- 터치 이벤트 처리 (설정, WiFi, 새로고침, 초기화)
+
+### 3. 기기 등록
 - MAC 주소 기반 고유 기기 ID 생성
 - 백엔드 서버에 자동 등록
 - 토큰 기반 인증
@@ -79,8 +96,7 @@ BaegaePro-firmware/
 
 ### 빌드 명령어
 ```bash
-# 프로젝트 디렉토리로 이동
-cd BaegaePro-firmware
+C:\Users\%USERNAME%\esp\v5.5\esp-idf\export.bat
 
 # 빌드
 idf.py build
@@ -205,6 +221,7 @@ WiFi 연결 관리를 담당하는 컴포넌트
 MIT License
 
 ## 기여하기
+
 
 1. Fork the project
 2. Create your feature branch

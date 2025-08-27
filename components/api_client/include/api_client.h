@@ -17,6 +17,17 @@ typedef struct {
 } device_registration_request_t;
 
 typedef struct {
+    char current_time[64];
+    char weather_info[128];
+    char temperature[16];
+    char humidity[16];
+    char sleep_score[16];
+    char noise_level[16];
+    char alarm_time[16];
+    char status_message[128];
+} home_data_t;
+
+typedef struct {
     bool success;
     char message[256];
     int status_code;
@@ -26,6 +37,7 @@ esp_err_t api_client_init(void);
 esp_err_t api_client_register_device(const char* device_id, const char* token, api_response_t* response);
 esp_err_t api_client_send_heartbeat(const char* device_id, const char* token, api_response_t* response);
 esp_err_t api_client_update_status(const char* device_id, const char* token, const char* status, api_response_t* response);
+esp_err_t api_client_get_home_data(const char* device_id, const char* token, home_data_t* home_data, api_response_t* response);
 
 #ifdef __cplusplus
 }
