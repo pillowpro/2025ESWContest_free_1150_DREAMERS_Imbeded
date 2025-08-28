@@ -179,10 +179,10 @@ esp_err_t nextion_show_initial_setup_message(void)
     
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ret = nextion_set_text("t0", "Please Open Application To configure");
+    ret = nextion_set_text("t0", "BaegaePro need App Configutation");
     if (ret != ESP_OK) return ret;
     
-    ret = nextion_set_text("t1", "The device needs initial setting");
+    ret = nextion_set_text("t1", "Please Open App");
     if (ret != ESP_OK) return ret;
     
     ESP_LOGI(TAG, "Initial setup message displayed");
@@ -199,11 +199,11 @@ esp_err_t nextion_show_provisioning_info(const char* ssid, const char* password)
     
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ret = nextion_set_text("t0", "WiFi Configuration Mode");
+    ret = nextion_set_text("t0", "Application Config Mode");
     if (ret != ESP_OK) return ret;
     
     char ap_info[128];
-    snprintf(ap_info, sizeof(ap_info), "Connect to: %s", ssid);
+    snprintf(ap_info, sizeof(ap_info), "DEVICE ID : %s", ssid);
     ret = nextion_set_text("t1", ap_info);
     if (ret != ESP_OK) return ret;
     
@@ -274,4 +274,22 @@ esp_err_t nextion_show_home_data(const char* temperature, const char* weather, c
              temperature, weather, sleep_score, noise_level, alarm_time);
     
     return ESP_OK;
+}
+
+esp_err_t nextion_show_fota_status(const char* status)
+{
+    esp_err_t ret = nextion_set_text("t49", status);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "FOTA status displayed: %s", status);
+    }
+    return ret;
+}
+
+esp_err_t nextion_clear_fota_status(void)
+{
+    esp_err_t ret = nextion_set_text("t49", "");
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "FOTA status cleared");
+    }
+    return ret;
 }

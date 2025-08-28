@@ -111,6 +111,43 @@ Authorization: Bearer <device_token>
 }
 ```
 
+### 펌웨어 업데이트 체크 API ⭐ **NEW FOTA**
+**Endpoint:** `GET /api/v1/firmware/check/{deviceId}`
+
+**Description:** ESP32 기기가 새로운 펌웨어 업데이트를 확인합니다.
+
+**Request Headers:**
+```
+Authorization: Bearer <device_token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "version": "1.1.0",
+    "download_url": "https://firmware.baegaepro.com/releases/baegaepro-v1.1.0.bin",
+    "sha256": "a1b2c3d4e5f6...",
+    "file_size": 1048576,
+    "release_notes": "Bug fixes and performance improvements",
+    "mandatory": false,
+    "released_at": "2025-08-26T10:30:00Z"
+  }
+}
+```
+
+**No Update Available Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "message": "No update available",
+    "current_version": "1.0.0"
+  }
+}
+```
+
 ### 홈 데이터 조회 API ⭐ **NEW**
 **Endpoint:** `GET /api/v1/home`
 
@@ -302,6 +339,353 @@ const getNextAlarmTime = (device) => {
 module.exports = router;
 ```
 
+### FOTA 서버 구현 예시 ⭐ **NEW FOTA**
+
+```javascript
+// routes/firmware.js
+const express = require('express');
+const router = express.Router();
+const semver = require('semver');
+const crypto = require('crypto');
+const fs = require('fs').promises;
+
+// GET /api/v1/firmware/check/:deviceId
+router.get('/check/:deviceId', authMiddleware, async (req, res) => {
+  try {
+    const deviceId = req.params.deviceId;
+    
+    // 기기 정보 조회
+    const device = await Device.findOne({ device_id: deviceId });
+    if (!device) {
+      return res.status(404).json({
+        success: false,
+        error: 'Device not found'
+      });
+    }
+    
+    const currentVersion = device.firmware_version || '1.0.0';
+    
+    // 최신 펌웨어 조회
+    const latestFirmware = await FirmwareRelease.findOne({
+      device_type: 'baegaepro',
+      status: 'stable',
+      released_at: { $lte: new Date() }
+    }).sort({ released_at: -1 });
+    
+    if (!latestFirmware) {
+      return res.json({
+        success: true,
+        data: {
+          message: 'No firmware available',
+          current_version: currentVersion
+        }
+      });
+    }
+    
+    // 버전 비교 (semver 사용)
+    const updateAvailable = semver.gt(latestFirmware.version, currentVersion);
+    
+    if (!updateAvailable) {
+      return res.json({
+        success: true,
+        data: {
+          message: 'No update available',
+          current_version: currentVersion,
+          latest_version: latestFirmware.version
+        }
+      });
+    }
+    
+    // 업데이트 가능한 경우
+    const updateData = {
+      version: latestFirmware.version,
+      download_url: latestFirmware.file_url,
+      sha256: latestFirmware.sha256_hash,
+      file_size: latestFirmware.file_size,
+      release_notes: latestFirmware.release_notes || 'Performance improvements and bug fixes',
+      mandatory: latestFirmware.mandatory,
+      released_at: latestFirmware.released_at
+    };
+    
+    // FOTA 체크 로그 기록
+    await DeviceLog.create({
+      device_id: deviceId,
+      event_type: 'fota_check',
+      payload: {
+        current_version: currentVersion,
+        available_version: latestFirmware.version,
+        update_available: true
+      }
+    });
+    
+    res.json({
+      success: true,
+      data: updateData
+    });
+    
+  } catch (error) {
+    console.error('FOTA check error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to check firmware updates'
+    });
+  }
+});
+
+// POST /api/v1/firmware/update/start
+router.post('/update/start', authMiddleware, async (req, res) => {
+  try {
+    const deviceId = req.deviceId;
+    const { target_version } = req.body;
+    
+    // 현재 업데이트 상태 확인
+    const ongoingUpdate = await FirmwareUpdate.findOne({
+      device_id: deviceId,
+      status: { $in: ['started', 'downloading', 'verifying', 'installing'] }
+    });
+    
+    if (ongoingUpdate) {
+      return res.status(409).json({
+        success: false,
+        error: 'Update already in progress'
+      });
+    }
+    
+    const device = await Device.findOne({ device_id: deviceId });
+    const currentVersion = device.firmware_version || '1.0.0';
+    
+    // 업데이트 기록 생성
+    const updateRecord = await FirmwareUpdate.create({
+      device_id: deviceId,
+      from_version: currentVersion,
+      to_version: target_version,
+      status: 'started'
+    });
+    
+    // 디바이스 상태 업데이트
+    await Device.updateOne(
+      { device_id: deviceId },
+      { status: 'updating' }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Firmware update started',
+      update_id: updateRecord.id
+    });
+    
+    // 비동기로 모바일 앱에 알림 전송
+    setImmediate(() => {
+      sendDeviceAlert(
+        deviceId,
+        'fota_started',
+        `기기 펌웨어 업데이트가 시작되었습니다. (${currentVersion} → ${target_version})`
+      );
+    });
+    
+  } catch (error) {
+    console.error('FOTA start error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to start firmware update'
+    });
+  }
+});
+
+// POST /api/v1/firmware/update/progress
+router.post('/update/progress', authMiddleware, async (req, res) => {
+  try {
+    const deviceId = req.deviceId;
+    const { status, progress_percent, error_message } = req.body;
+    
+    const updateRecord = await FirmwareUpdate.findOneAndUpdate(
+      {
+        device_id: deviceId,
+        status: { $in: ['started', 'downloading', 'verifying', 'installing'] }
+      },
+      {
+        status,
+        progress_percent: progress_percent || 0,
+        error_message: error_message || null,
+        ...(status === 'completed' || status === 'failed' ? { completed_at: new Date() } : {})
+      },
+      { new: true }
+    );
+    
+    if (!updateRecord) {
+      return res.status(404).json({
+        success: false,
+        error: 'Update record not found'
+      });
+    }
+    
+    // 업데이트 완료 시 기기 정보 업데이트
+    if (status === 'completed') {
+      await Device.updateOne(
+        { device_id: deviceId },
+        {
+          firmware_version: updateRecord.to_version,
+          status: 'online'
+        }
+      );
+      
+      // 성공 알림
+      await sendDeviceAlert(
+        deviceId,
+        'fota_completed',
+        `펌웨어 업데이트가 성공적으로 완료되었습니다. (${updateRecord.to_version})`
+      );
+    } else if (status === 'failed') {
+      await Device.updateOne(
+        { device_id: deviceId },
+        { status: 'error' }
+      );
+      
+      // 실패 알림
+      await sendDeviceAlert(
+        deviceId,
+        'fota_failed',
+        `펌웨어 업데이트가 실패했습니다: ${error_message}`
+      );
+    }
+    
+    res.json({
+      success: true,
+      message: 'Progress updated'
+    });
+    
+  } catch (error) {
+    console.error('FOTA progress error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update progress'
+    });
+  }
+});
+
+// GET /api/v1/firmware/releases - 관리자용
+router.get('/releases', adminAuthMiddleware, async (req, res) => {
+  try {
+    const releases = await FirmwareRelease.find()
+      .sort({ created_at: -1 })
+      .limit(20);
+    
+    res.json({
+      success: true,
+      data: releases
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch releases'
+    });
+  }
+});
+
+// POST /api/v1/firmware/releases - 새 펌웨어 릴리스 등록
+router.post('/releases', adminAuthMiddleware, upload.single('firmware'), async (req, res) => {
+  try {
+    const { version, release_notes, mandatory, device_type } = req.body;
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Firmware file required'
+      });
+    }
+    
+    // 파일 SHA256 해시 계산
+    const fileBuffer = await fs.readFile(file.path);
+    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    
+    // S3 또는 파일 서버에 업로드 (예시)
+    const fileUrl = await uploadFirmwareFile(file, version);
+    
+    const release = await FirmwareRelease.create({
+      version,
+      file_url: fileUrl,
+      file_size: file.size,
+      sha256_hash: hash,
+      device_type: device_type || 'baegaepro',
+      release_notes,
+      mandatory: mandatory === 'true',
+      status: 'stable',
+      released_at: new Date()
+    });
+    
+    res.json({
+      success: true,
+      message: 'Firmware release created',
+      data: release
+    });
+    
+  } catch (error) {
+    console.error('Release creation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create release'
+    });
+  }
+});
+
+module.exports = router;
+```
+
+### FOTA 파일 관리 예시
+
+```javascript
+// services/firmwareService.js
+const AWS = require('aws-sdk');
+const s3 = new AWS.S3();
+
+// S3에 펌웨어 파일 업로드
+const uploadFirmwareFile = async (file, version) => {
+  const key = `firmware/baegaepro/v${version}/baegaepro-${version}.bin`;
+  
+  const uploadParams = {
+    Bucket: process.env.S3_FIRMWARE_BUCKET,
+    Key: key,
+    Body: fs.createReadStream(file.path),
+    ContentType: 'application/octet-stream',
+    ACL: 'private'
+  };
+  
+  const result = await s3.upload(uploadParams).promise();
+  
+  // 임시 파일 삭제
+  await fs.unlink(file.path);
+  
+  // 서명된 URL 반환 (다운로드 시 인증 필요)
+  return s3.getSignedUrl('getObject', {
+    Bucket: process.env.S3_FIRMWARE_BUCKET,
+    Key: key,
+    Expires: 3600 // 1시간 유효
+  });
+};
+
+// 펌웨어 무결성 검증
+const verifyFirmwareIntegrity = async (fileBuffer, expectedHash) => {
+  const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  return hash === expectedHash;
+};
+
+// 펌웨어 보안 스캔 (예시)
+const scanFirmwareSecurity = async (filePath) => {
+  // 실제로는 바이러스 스캔, 서명 검증 등
+  // 예: ClamAV, VirusTotal API 연동
+  return { safe: true, threats: [] };
+};
+
+module.exports = {
+  uploadFirmwareFile,
+  verifyFirmwareIntegrity,
+  scanFirmwareSecurity
+};
+```
+
 ### 환경 변수 설정
 ```env
 # .env 파일
@@ -475,6 +859,48 @@ CREATE TABLE device_tokens (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY unique_device_token (device_id),
   INDEX idx_token_hash (token_hash),
+  FOREIGN KEY (device_id) REFERENCES devices(device_id)
+);
+```
+
+### firmware_releases 테이블 ⭐ **NEW FOTA**
+```sql
+CREATE TABLE firmware_releases (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  version VARCHAR(32) NOT NULL UNIQUE,
+  file_url VARCHAR(512) NOT NULL,
+  file_size BIGINT NOT NULL,
+  sha256_hash VARCHAR(64) NOT NULL,
+  device_type VARCHAR(50) DEFAULT 'baegaepro',
+  release_notes TEXT,
+  mandatory BOOLEAN DEFAULT FALSE,
+  min_version VARCHAR(32), -- 최소 요구 버전
+  max_version VARCHAR(32), -- 최대 지원 버전 
+  status ENUM('draft', 'beta', 'stable', 'deprecated') DEFAULT 'stable',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  released_at TIMESTAMP,
+  INDEX idx_version (version),
+  INDEX idx_device_type (device_type),
+  INDEX idx_status (status),
+  INDEX idx_released_at (released_at)
+);
+```
+
+### firmware_updates 테이블 ⭐ **NEW FOTA**
+```sql
+CREATE TABLE firmware_updates (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  device_id VARCHAR(16) NOT NULL,
+  from_version VARCHAR(32),
+  to_version VARCHAR(32) NOT NULL,
+  status ENUM('started', 'downloading', 'verifying', 'installing', 'completed', 'failed', 'rolled_back') DEFAULT 'started',
+  progress_percent TINYINT DEFAULT 0,
+  error_message TEXT,
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL,
+  INDEX idx_device_id (device_id),
+  INDEX idx_status (status),
+  INDEX idx_started_at (started_at),
   FOREIGN KEY (device_id) REFERENCES devices(device_id)
 );
 ```
@@ -769,6 +1195,9 @@ const pool = mysql.createPool({
 - [ ] `POST /api/v1/device/{deviceId}/heartbeat` - 하트비트
 - [ ] `GET /api/v1/home` - 홈 데이터 조회 (NEXTION 용)
 - [ ] `POST /api/v1/device/{deviceId}/status` - 상태 업데이트
+- [ ] `GET /api/v1/firmware/check/{deviceId}` - FOTA 체크 ⭐ **NEW**
+- [ ] `POST /api/v1/firmware/update/start` - FOTA 시작 ⭐ **NEW**
+- [ ] `POST /api/v1/firmware/update/progress` - FOTA 진행 상황 ⭐ **NEW**
 
 ### 외부 API 연동
 - [ ] OpenWeatherMap API 연동
@@ -779,7 +1208,9 @@ const pool = mysql.createPool({
 - [ ] devices 테이블 생성
 - [ ] device_logs 테이블 생성
 - [ ] device_tokens 테이블 생성
-- [ ] 인덱스 설정 (device_id, user_id, created_at)
+- [ ] firmware_releases 테이블 생성 ⭐ **NEW FOTA**
+- [ ] firmware_updates 테이블 생성 ⭐ **NEW FOTA**
+- [ ] 인덱스 설정 (device_id, user_id, created_at, version, status)
 
 ### 캐싱 및 성능
 - [ ] Redis 캐싱 설정
@@ -810,9 +1241,34 @@ const pool = mysql.createPool({
 - [ ] PM2 프로세스 매니저
 - [ ] 로드 밸런싱 (선택사항)
 
+### FOTA 파일 관리 ⭐ **NEW**
+- [ ] AWS S3 또는 파일 서버 설정
+- [ ] 펌웨어 파일 업로드 API
+- [ ] SHA256 해시 검증
+- [ ] 서명된 URL 생성 (보안)
+- [ ] 파일 버전 관리 (semver)
+- [ ] 파일 무결성 검증
+
+### FOTA 보안 ⭐ **NEW**
+- [ ] 펌웨어 디지털 서명
+- [ ] 다운로드 URL 인증
+- [ ] 펌웨어 보안 스캔
+- [ ] 롱백 메커니즘
+- [ ] 비상 대응 계획
+
+### FOTA 모니터링 ⭐ **NEW**
+- [ ] 업데이트 진행 상황 대시보드
+- [ ] 실패율 모니터링
+- [ ] 네트워크 사용량 추적
+- [ ] 디바이스별 업데이트 로그
+- [ ] 알림 시스템 (FCM/웹소켓)
+
 ### ESP32 펌웨어 연동 확인
 - [ ] NEXTION Page 0 설정 모드 구성 (t0: 메인 메시지, t1: 서브 메시지)
 - [ ] NEXTION Page 1 홈 모드 구성 (t0: 온도, t1: 날씨, t2: 수면점수, t3: 소음, t4: 알람)
 - [ ] 5분 주기 홈 데이터 업데이트
+- [ ] 1시간 주기 FOTA 체크 ⭐ **NEW**
+- [ ] OTA 파티션 관리 ⭐ **NEW**
+- [ ] 롤백 기능 구현 ⭐ **NEW**
 - [ ] 네트워크 오류 시 폴백 처리
 - [ ] NEXTION 터치 이벤트 처리 (설정, WiFi 목록, 새로고침, 초기화)

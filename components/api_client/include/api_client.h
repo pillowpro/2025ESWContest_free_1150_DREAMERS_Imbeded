@@ -30,6 +30,7 @@ typedef struct {
 typedef struct {
     bool success;
     char message[256];
+    char data[512];
     int status_code;
 } api_response_t;
 
@@ -38,6 +39,7 @@ esp_err_t api_client_register_device(const char* device_id, const char* token, a
 esp_err_t api_client_send_heartbeat(const char* device_id, const char* token, api_response_t* response);
 esp_err_t api_client_update_status(const char* device_id, const char* token, const char* status, api_response_t* response);
 esp_err_t api_client_get_home_data(const char* device_id, const char* token, home_data_t* home_data, api_response_t* response);
+esp_err_t api_client_check_firmware_update(const char* device_id, const char* token, api_response_t* response);
 
 #ifdef __cplusplus
 }

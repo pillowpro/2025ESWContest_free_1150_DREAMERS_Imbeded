@@ -59,6 +59,8 @@ esp_err_t nextion_show_setup_status(const char* status);
 
 // Page 1 - Home Mode
 esp_err_t nextion_show_home_data(const char* temperature, const char* weather, const char* sleep_score, const char* noise_level, const char* alarm_time);
+esp_err_t nextion_show_fota_status(const char* status);
+esp_err_t nextion_clear_fota_status(void);
 
 #ifdef __cplusplus
 }
