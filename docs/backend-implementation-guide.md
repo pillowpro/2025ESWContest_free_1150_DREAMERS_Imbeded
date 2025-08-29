@@ -1,1274 +1,1254 @@
-# BaegaePro 백엔드 서버 구현 가이드
+# BaegaePro 스마트 베개 통합 백엔드 API 명세서
 
-## 개요
-BaegaePro IoT 기기의 백엔드 서버 구현을 위한 가이드입니다. ESP32-C6 기기와의 통신을 위한 REST API를 제공합니다.
+## 📋 개요
 
-## 아키텍처
+BaegaePro 스마트 베개 IoT 기기와 모바일 앱을 위한 통합 백엔드 서버 API 명세서입니다. ESP32-C6 기기와의 실시간 통신, 수면 데이터 분석, 코골이 감지 및 베개 각도 자동 조절, NEXTION HMI 연동, FOTA 업데이트 등의 기능을 제공합니다.
 
-### 기본 구조
+## 🔬 베개 각도 조절 로직 (Anti-Snoring Algorithm)
+
+### 코골이와 베개 각도의 과학적 근거
+
+**연구 기반 사실:**
+- 베개 높이 13cm 이상: 기도 압박으로 코골이 유발
+- 베개 너무 낮음: 혀가 뒤로 처져 상기도 막힘
+- 적정 각도: 7-10도 상승으로 기도 확장 효과
+- 30분 주기 조절: 목 근육 피로 방지 및 혈액순환 개선
+
+### 베개 각도 제어 알고리즘
+
+```
+1단계: 코골이 감지 (MEMS 마이크 + AI 분석)
+2단계: 점진적 각도 상승 (1도씩 최대 12도까지)
+3단계: 코골이 중단 확인 (30초 모니터링)
+4단계: 안정화 유지 (15분간 현재 각도 유지)
+5단계: 점진적 하강 (30분 후 1도씩 기본 각도로 복원)
+```
+
+**Pump Control Response:**
+```json
+{
+  "pump": 80,           // 0-100 (0도-12도 각도)
+  "duration": 30,       // 유지 시간(초)
+  "mode": "gradual",    // gradual/immediate
+  "target_angle": 8.5,  // 목표 각도
+  "reason": "snore_detected"
+}
+```
+
+## 🧠 수면 점수 계산 알고리즘 (100점 만점)
+
+### 점수 구성 (가중치 기반)
+
+**1. 수면 시간 (30%)**
+- 최적 범위: 7.5-9시간 = 30점
+- 부족/과다: 선형 감소
+- 공식: `min(30, (sleep_hours / 8.0) * 30)`
+
+**2. 수면 효율 (25%)**  
+- 침대에 누운 시간 대비 실제 수면 시간
+- 85% 이상: 25점
+- 공식: `(sleep_efficiency / 85) * 25`
+
+**3. 수면 안정성 (20%)**
+- 각성 횟수 및 뒤척임 빈도
+- 3회 이하 각성: 20점
+- 공식: `max(0, 20 - (wakeup_count * 4))`
+
+**4. 심박수 변화 (15%)**
+- 수면 중 심박수가 안정시보다 10% 이상 감소: 15점
+- 공식: `((resting_hr - sleep_hr) / resting_hr) * 150`
+
+**5. 코골이 빈도 (10%)**
+- 총 수면 시간 대비 코골이 시간
+- 5% 미만: 10점
+- 공식: `max(0, 10 - (snore_ratio * 200))`
+
+### 최종 점수 산출
+
+```javascript
+const calculateSleepScore = (sleepData) => {
+  const timeScore = Math.min(30, (sleepData.sleepHours / 8.0) * 30);
+  const efficiencyScore = (sleepData.sleepEfficiency / 85) * 25;
+  const stabilityScore = Math.max(0, 20 - (sleepData.wakeupCount * 4));
+  const hrScore = Math.min(15, ((sleepData.restingHr - sleepData.sleepHr) / sleepData.restingHr) * 150);
+  const snoreScore = Math.max(0, 10 - (sleepData.snoreRatio * 200));
+  
+  return Math.round(timeScore + efficiencyScore + stabilityScore + hrScore + snoreScore);
+};
+```
+
+## 🏗️ 시스템 아키텍처
+
+### 백엔드 구조
 ```
 backend/
 ├── src/
 │   ├── controllers/
-│   │   ├── deviceController.js
-│   │   ├── authController.js
-│   │   └── statusController.js
-│   ├── models/
-│   │   ├── Device.js
-│   │   ├── User.js
-│   │   └── DeviceLog.js
-│   ├── middleware/
-│   │   ├── auth.js
-│   │   ├── validation.js
-│   │   └── rateLimit.js
-│   ├── routes/
-│   │   ├── device.js
-│   │   ├── auth.js
-│   │   └── api.js
+│   │   ├── deviceController.js      # 기기 관리
+│   │   ├── authController.js        # 인증/회원가입
+│   │   ├── sleepController.js       # 수면 세션 관리
+│   │   ├── dataController.js        # 센서 데이터
+│   │   ├── soundController.js       # 오디오 처리
+│   │   ├── alarmController.js       # 알람 기능
+│   │   ├── analyticsController.js   # 수면 분석
+│   │   └── homeController.js        # 대시보드
 │   ├── services/
-│   │   ├── deviceService.js
-│   │   ├── notificationService.js
-│   │   └── analyticsService.js
-│   └── utils/
-│       ├── logger.js
-│       ├── crypto.js
-│       └── validator.js
-├── config/
-│   ├── database.js
-│   ├── redis.js
-│   └── app.js
-├── tests/
-├── docs/
-└── package.json
+│   │   ├── snoreDetectionService.js # 코골이 AI 분석
+│   │   ├── pumpControlService.js    # 베개 각도 제어
+│   │   ├── sleepScoreService.js     # 수면 점수 계산
+│   │   ├── weatherService.js        # 날씨 API 연동
+│   │   └── notificationService.js   # FCM 알림
+│   └── algorithms/
+│       ├── antiSnoringAlgorithm.js  # 코골이 방지 로직
+│       ├── sleepStageDetection.js   # 수면 단계 분석
+│       └── pumpScheduler.js         # 베개 각도 스케줄링
 ```
 
-## API 명세
+### 데이터베이스 스키마 (MySQL 8.0)
 
-### 기기 등록 API
-**Endpoint:** `POST /api/v1/device/new`
+**사용자 관리**
+```sql
+CREATE TABLE users (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  phone VARCHAR(20),
+  birth_date DATE,
+  gender ENUM('M', 'F', 'OTHER'),
+  fcm_token VARCHAR(255),
+  timezone VARCHAR(50) DEFAULT 'Asia/Seoul',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_email (email),
+  INDEX idx_phone (phone)
+);
 
-**Request Headers:**
+CREATE TABLE devices (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  device_id VARCHAR(16) UNIQUE NOT NULL,
+  user_id BIGINT NOT NULL,
+  device_name VARCHAR(100) DEFAULT '베개프로',
+  device_type VARCHAR(50) DEFAULT 'baegaepro-v1',
+  firmware_version VARCHAR(32) DEFAULT '1.0.0',
+  status ENUM('registered', 'online', 'offline', 'updating', 'error') DEFAULT 'registered',
+  location_city VARCHAR(100) DEFAULT 'Seoul',
+  timezone VARCHAR(50) DEFAULT 'Asia/Seoul',
+  pump_angle TINYINT DEFAULT 0,
+  last_seen TIMESTAMP NULL,
+  last_pump_action TIMESTAMP NULL,
+  settings JSON,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_device_id (device_id),
+  INDEX idx_user_id (user_id),
+  INDEX idx_status (status),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 ```
-Content-Type: application/json
-Authorization: Bearer <user_token>
+
+**수면 세션 관리**
+```sql
+CREATE TABLE sleep_sessions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  session_id VARCHAR(36) UNIQUE NOT NULL,
+  device_id VARCHAR(16) NOT NULL,
+  user_id BIGINT NOT NULL,
+  start_time TIMESTAMP NOT NULL,
+  end_time TIMESTAMP NULL,
+  local_start_time VARCHAR(30) NOT NULL,
+  local_end_time VARCHAR(30) NULL,
+  status ENUM('active', 'completed', 'interrupted', 'processing') DEFAULT 'active',
+  total_sleep_minutes INT DEFAULT 0,
+  sleep_score TINYINT DEFAULT 0,
+  sleep_efficiency DECIMAL(5,2) DEFAULT 0,
+  wakeup_count SMALLINT DEFAULT 0,
+  snore_count SMALLINT DEFAULT 0,
+  snore_duration_minutes INT DEFAULT 0,
+  pump_activations SMALLINT DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL,
+  INDEX idx_session_id (session_id),
+  INDEX idx_device_id (device_id),
+  INDEX idx_user_id (user_id),
+  INDEX idx_start_time (start_time),
+  INDEX idx_status (status),
+  FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 ```
 
-**Request Body:**
+**센서 데이터 (TimescaleDB 권장)**
+```sql
+CREATE TABLE sensor_readings (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  session_id VARCHAR(36) NOT NULL,
+  device_id VARCHAR(16) NOT NULL,
+  timestamp TIMESTAMP(3) NOT NULL,
+  data_type ENUM('gyro', 'heart_rate', 'spo2', 'temp', 'humidity', 'noise') NOT NULL,
+  value DECIMAL(10,3) NOT NULL,
+  unit VARCHAR(10),
+  meta JSON,
+  INDEX idx_session_timestamp (session_id, timestamp),
+  INDEX idx_device_timestamp (device_id, timestamp),
+  INDEX idx_data_type (data_type),
+  FOREIGN KEY (session_id) REFERENCES sleep_sessions(session_id) ON DELETE CASCADE
+);
+```
+
+**코골이 & 베개 제어 로그**
+```sql
+CREATE TABLE snore_events (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  session_id VARCHAR(36) NOT NULL,
+  device_id VARCHAR(16) NOT NULL,
+  detected_at TIMESTAMP(3) NOT NULL,
+  confidence DECIMAL(4,2) NOT NULL,
+  duration_seconds SMALLINT DEFAULT 0,
+  pump_activated BOOLEAN DEFAULT FALSE,
+  pump_angle_before TINYINT DEFAULT 0,
+  pump_angle_after TINYINT DEFAULT 0,
+  ai_analysis JSON,
+  INDEX idx_session_detected (session_id, detected_at),
+  INDEX idx_device_detected (device_id, detected_at),
+  FOREIGN KEY (session_id) REFERENCES sleep_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE pump_actions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  session_id VARCHAR(36),
+  device_id VARCHAR(16) NOT NULL,
+  action_time TIMESTAMP(3) NOT NULL,
+  action_type ENUM('raise', 'lower', 'maintain', 'reset') NOT NULL,
+  from_angle TINYINT NOT NULL,
+  to_angle TINYINT NOT NULL,
+  trigger_reason ENUM('snore_detected', 'schedule', 'manual', 'comfort') NOT NULL,
+  duration_seconds INT DEFAULT 0,
+  success BOOLEAN DEFAULT TRUE,
+  INDEX idx_session_action (session_id, action_time),
+  INDEX idx_device_action (device_id, action_time),
+  FOREIGN KEY (session_id) REFERENCES sleep_sessions(session_id) ON DELETE SET NULL
+);
+```
+
+**알람 시스템**
+```sql
+CREATE TABLE alarms (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  device_id VARCHAR(16) NOT NULL,
+  user_id BIGINT NOT NULL,
+  alarm_time TIME NOT NULL,
+  days_of_week VARCHAR(7) DEFAULT '1111100',
+  enabled BOOLEAN DEFAULT TRUE,
+  smart_wake BOOLEAN DEFAULT TRUE,
+  wake_window_minutes TINYINT DEFAULT 30,
+  sound_id VARCHAR(50) DEFAULT 'gentle_wake',
+  volume TINYINT DEFAULT 70,
+  vibration BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_device_id (device_id),
+  INDEX idx_user_id (user_id),
+  INDEX idx_enabled (enabled),
+  FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE alarm_sessions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  alarm_id BIGINT NOT NULL,
+  session_id VARCHAR(36),
+  scheduled_time TIMESTAMP NOT NULL,
+  actual_wake_time TIMESTAMP NULL,
+  status ENUM('scheduled', 'triggered', 'snoozed', 'dismissed', 'missed') DEFAULT 'scheduled',
+  snooze_count TINYINT DEFAULT 0,
+  sleep_stage_at_wake ENUM('deep', 'light', 'rem', 'awake') NULL,
+  user_rating TINYINT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_alarm_id (alarm_id),
+  INDEX idx_session_id (session_id),
+  INDEX idx_scheduled_time (scheduled_time),
+  INDEX idx_status (status),
+  FOREIGN KEY (alarm_id) REFERENCES alarms(id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sleep_sessions(session_id) ON DELETE SET NULL
+);
+```
+
+## 🔐 인증 시스템
+
+### 헤더 인증 방식
+```
+X-Device-Id: <device_unique_id>      # ESP32 기기 식별
+Authorization: Bearer <jwt_token>    # 사용자/기기 인증
+X-Timestamp: <ISO8601_timestamp>     # 요청 시각
+```
+
+### JWT 토큰 구조
 ```json
 {
-  "deviceId": "A1B2C3D4"
+  "sub": "user_12345",
+  "device_id": "A1B2C3D4",
+  "type": "device|user",
+  "exp": 1735689600,
+  "iat": 1735603200
 }
 ```
 
-**Response:**
+## 📡 API 엔드포인트 명세
+
+### 🚀 사용자 인증 & 회원가입
+
+#### POST /api/v1/auth/register
+**Description:** 사용자 회원가입
+
+**Request:**
+```json
+{
+  "email": "user@example.com",
+  "password": "securePassword123",
+  "name": "홍길동",
+  "phone": "010-1234-5678",
+  "birth_date": "1990-01-15",
+  "gender": "M"
+}
+```
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "message": "회원가입이 완료되었습니다",
+  "data": {
+    "user_id": "user_12345",
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+    "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2g...",
+    "expires_in": 3600
+  }
+}
+```
+
+#### POST /api/v1/auth/login
+**Description:** 사용자 로그인
+
+**Request:**
+```json
+{
+  "email": "user@example.com",
+  "password": "securePassword123",
+  "fcm_token": "device_fcm_token_here"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "user_id": "user_12345",
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+    "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2g...",
+    "user": {
+      "name": "홍길동",
+      "email": "user@example.com",
+      "devices_count": 1
+    }
+  }
+}
+```
+
+### 🎛️ 기기 관리 API
+
+#### POST /api/v1/device/register
+**Description:** 새 기기 등록 (사용자가 앱에서 실행)
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "device_id": "A1B2C3D4",
+  "device_name": "침실 베개프로",
+  "location_city": "Seoul",
+  "timezone": "Asia/Seoul"
+}
+```
+
+**Response (201):**
 ```json
 {
   "success": true,
   "message": "기기가 성공적으로 등록되었습니다",
   "data": {
-    "deviceId": "A1B2C3D4",
-    "status": "registered",
-    "registeredAt": "2025-08-26T10:30:00Z"
+    "device_id": "A1B2C3D4",
+    "device_token": "device_jwt_token_here",
+    "provisioning_code": "PROV-12345678",
+    "expires_in": 300,
+    "status": "registered"
   }
 }
 ```
 
-### 기기 상태 업데이트 API
-**Endpoint:** `POST /api/v1/device/{deviceId}/status`
+#### GET /api/v1/device/{deviceId}/status
+**Description:** 앱에서 기기 등록 상태 폴링 확인
 
-**Request Headers:**
+**Headers:**
 ```
-Content-Type: application/json
-Authorization: Bearer <device_token>
+Authorization: Bearer <user_token>
 ```
 
-**Request Body:**
+**Response (200):**
 ```json
 {
-  "status": "online",
-  "temperature": 25.3,
-  "humidity": 60.2,
-  "battery": 85,
-  "timestamp": "2025-08-26T10:30:00Z"
+  "success": true,
+  "data": {
+    "device_id": "A1B2C3D4",
+    "status": "online",
+    "firmware_version": "1.0.0",
+    "last_seen": "2025-08-29T14:30:00+09:00",
+    "wifi_rssi": -45,
+    "battery_level": 85,
+    "is_setup_complete": true
+  }
 }
 ```
 
-### 하트비트 API
-**Endpoint:** `POST /api/v1/device/{deviceId}/heartbeat`
+#### PUT /api/v1/device/{deviceId}/settings
+**Description:** 기기 상세 설정 업데이트
 
-**Request Headers:**
+**Headers:**
 ```
-Content-Type: application/json
-Authorization: Bearer <device_token>
+Authorization: Bearer <user_token>
 ```
 
-**Request Body:**
+**Request:**
 ```json
 {
-  "uptime": 3600,
-  "freeMemory": 180000,
-  "wifiRssi": -45
+  "device_name": "침실 베개프로",
+  "location_city": "Busan",
+  "timezone": "Asia/Seoul",
+  "pump_sensitivity": 7,
+  "max_pump_angle": 10,
+  "auto_adjustment": true,
+  "night_mode": {
+    "enabled": true,
+    "start_time": "22:00",
+    "end_time": "07:00"
+  }
 }
 ```
 
-### 펌웨어 업데이트 체크 API ⭐ **NEW FOTA**
-**Endpoint:** `GET /api/v1/firmware/check/{deviceId}`
+#### DELETE /api/v1/device/{deviceId}
+**Description:** 기기 삭제
 
-**Description:** ESP32 기기가 새로운 펌웨어 업데이트를 확인합니다.
+**Headers:**
+```
+Authorization: Bearer <user_token>
+```
 
-**Request Headers:**
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "기기가 삭제되었습니다"
+}
+```
+
+### 🏠 대시보드 & 홈 데이터 API
+
+#### GET /api/v1/home
+**Description:** NEXTION HMI 화면용 홈 데이터 (ESP32 요청)
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "currentTime": "2025-08-29T14:30:00+09:00",
+    "weather": "맑음",
+    "temperature": "22",
+    "humidity": "65",
+    "sleepScore": "85",
+    "noiseLevel": "24",
+    "alarmTime": "7:20",
+    "status": "정상 작동",
+    "pumpAngle": 3
+  }
+}
+```
+
+#### GET /api/v1/weather/initial
+**Description:** 날씨 서비스 초기 설정 데이터
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+```
+
+**Request Query:**
+```
+?city=Seoul&lat=37.5665&lon=126.9780
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul",
+    "current": {
+      "temperature": 22.5,
+      "humidity": 65,
+      "weather": "맑음",
+      "weather_code": "clear",
+      "updated_at": "2025-08-29T14:30:00+09:00"
+    },
+    "forecast": [
+      {
+        "date": "2025-08-30",
+        "temp_min": 18,
+        "temp_max": 26,
+        "weather": "구름조금"
+      }
+    ]
+  }
+}
+```
+
+### 😴 수면 세션 관리 API
+
+#### POST /api/v1/sleep/start
+**Description:** 수면 세션 시작
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+X-Timestamp: 2025-08-29T23:12:34+09:00
+```
+
+**Request:**
+```json
+{
+  "session_local_start": "2025-08-29T23:12:34+09:00",
+  "initial_pump_angle": 0,
+  "room_temperature": 24.5,
+  "room_humidity": 60
+}
+```
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess-uuid-0001",
+    "started_at": "2025-08-29T23:12:34+09:00",
+    "status": "active"
+  }
+}
+```
+
+#### POST /api/v1/sleep/end
+**Description:** 수면 세션 종료
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+```
+
+**Request:**
+```json
+{
+  "session_id": "sess-uuid-0001",
+  "session_local_end": "2025-08-30T07:05:22+09:00",
+  "final_pump_angle": 2,
+  "total_snore_count": 12,
+  "total_pump_activations": 8
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess-uuid-0001",
+    "ended_at": "2025-08-30T07:05:22+09:00",
+    "total_sleep_minutes": 458,
+    "sleep_score": 82,
+    "processing_job_id": "job-uuid-1234",
+    "status": "processing"
+  }
+}
+```
+
+#### GET /api/v1/sleep/{sessionId}
+**Description:** 수면 세션 상세 조회
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess-uuid-0001",
+    "date": "2025-08-29",
+    "start_time": "23:12:34",
+    "end_time": "07:05:22",
+    "total_sleep_minutes": 458,
+    "sleep_score": 82,
+    "sleep_efficiency": 89.2,
+    "sleep_stages": {
+      "deep_sleep_minutes": 105,
+      "light_sleep_minutes": 285,
+      "rem_sleep_minutes": 68,
+      "awake_minutes": 15
+    },
+    "snoring": {
+      "total_events": 12,
+      "total_duration_minutes": 23,
+      "severity": "mild"
+    },
+    "pump_actions": {
+      "total_activations": 8,
+      "max_angle_reached": 8.5,
+      "average_response_time": 12.3
+    },
+    "vitals": {
+      "avg_heart_rate": 58,
+      "heart_rate_variability": 42,
+      "avg_spo2": 97,
+      "avg_temperature": 36.2
+    }
+  }
+}
+```
+
+### 📊 센서 데이터 수집 API
+
+#### POST /api/v1/sleep/data/{sessionId}
+**Description:** 센서 데이터 배치 업로드
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "samples": [
+    {
+      "ts": "2025-08-30T00:00:00+09:00",
+      "gyro": {"x": 0.003, "y": -0.002, "z": 0.000},
+      "heart_rate": 62,
+      "spo2": 99,
+      "skin_temp": 33.8,
+      "room_temp": 24.2,
+      "room_humidity": 58,
+      "noise_level": 25.3
+    },
+    {
+      "ts": "2025-08-30T00:01:00+09:00",
+      "gyro": {"x": 0.001, "y": -0.001, "z": 0.000},
+      "heart_rate": 61,
+      "spo2": 98,
+      "skin_temp": 33.6,
+      "room_temp": 24.1,
+      "room_humidity": 58,
+      "noise_level": 26.1
+    }
+  ],
+  "meta": {
+    "sample_rate": 0.0167,
+    "batch_sequence": 42,
+    "compression": "none"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "inserted": 2,
+    "session_id": "sess-uuid-0001",
+    "next_expected_sequence": 43,
+    "pump_command": {
+      "pump": 65,
+      "duration": 30,
+      "mode": "gradual",
+      "reason": "comfort_adjustment"
+    }
+  }
+}
+```
+
+### 🎵 오디오 데이터 & 코골이 감지 API
+
+#### POST /api/v1/sleep/sound
+**Description:** 오디오 PCM 데이터 청크 업로드
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+X-Session-Id: sess-uuid-0001
+X-Chunk-Index: 0
+X-Chunk-Final: false
+X-Sample-Rate: 16000
+X-Sample-Format: I2S_32_LE_24
+Content-Type: application/octet-stream
+Content-Length: 64000
+```
+
+**Body:** Raw binary PCM data (int32 little-endian)
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess-uuid-0001",
+    "chunk_index": 0,
+    "stored": true,
+    "pump_command": {
+      "pump": 75,
+      "duration": 45,
+      "mode": "gradual",
+      "target_angle": 7.5,
+      "reason": "snore_detected",
+      "confidence": 0.87
+    }
+  }
+}
+```
+
+**Response (Final Chunk):**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess-uuid-0001",
+    "assembled_file_id": "audio-uuid-5678",
+    "processing_job_id": "job-uuid-9999",
+    "total_chunks": 125,
+    "total_size_bytes": 8000000
+  }
+}
+```
+
+### ⏰ 알람 시스템 API
+
+#### POST /api/v1/alarm
+**Description:** 알람 설정
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+X-Device-Id: A1B2C3D4
+```
+
+**Request:**
+```json
+{
+  "alarm_time": "07:20:00",
+  "days_of_week": "1111100",
+  "enabled": true,
+  "smart_wake": true,
+  "wake_window_minutes": 30,
+  "sound_id": "gentle_birds",
+  "volume": 70,
+  "vibration": true
+}
+```
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "data": {
+    "alarm_id": "alarm_001",
+    "alarm_time": "07:20:00",
+    "next_trigger": "2025-08-30T07:20:00+09:00",
+    "days_of_week": "1111100",
+    "enabled": true
+  }
+}
+```
+
+#### PUT /api/v1/alarm/{alarmId}/pause
+**Description:** 알람 일시중지
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "알람이 일시중지되었습니다",
+  "paused_until": "2025-08-31T07:20:00+09:00"
+}
+```
+
+#### PUT /api/v1/alarm/{alarmId}/skip-once
+**Description:** 알람 하루만 끄기
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "내일 알람이 비활성화되었습니다",
+  "next_trigger": "2025-08-31T07:20:00+09:00"
+}
+```
+
+#### GET /api/v1/alarm/sessions
+**Description:** 알람 기록 조회 (월별)
+
+**Query Parameters:**
+```
+?year=2025&month=8&device_id=A1B2C3D4
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "month": "2025-08",
+    "total_alarms": 31,
+    "successful_wakes": 28,
+    "missed_alarms": 2,
+    "average_snooze_count": 1.2,
+    "sessions": [
+      {
+        "date": "2025-08-01",
+        "scheduled_time": "07:20:00",
+        "actual_wake_time": "07:18:32",
+        "status": "dismissed",
+        "snooze_count": 0,
+        "sleep_stage_at_wake": "light",
+        "user_rating": 4
+      }
+    ]
+  }
+}
+```
+
+### 📈 수면 분석 & 통계 API
+
+#### GET /api/v1/analytics/dashboard
+**Description:** 메인 대시보드 데이터 (앱 홈화면용)
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+```
+
+**Query Parameters:**
+```
+?device_id=A1B2C3D4&period=7d
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "period": "7d",
+    "summary": {
+      "avg_sleep_score": 82.3,
+      "avg_sleep_duration": "7시간 38분",
+      "total_snore_events": 45,
+      "pump_effectiveness": 91.2
+    },
+    "recent_session": {
+      "date": "2025-08-29",
+      "sleep_score": 85,
+      "sleep_duration": "7시간 53분",
+      "snore_count": 12,
+      "pump_activations": 8
+    },
+    "trends": {
+      "sleep_score_trend": "+3.2",
+      "snoring_trend": "-12.5",
+      "sleep_duration_trend": "+0.3"
+    },
+    "weather_impact": {
+      "temperature": "22°C",
+      "humidity": "65%",
+      "sleep_correlation": 0.78
+    }
+  }
+}
+```
+
+#### GET /api/v1/analytics/monthly/{year}/{month}
+**Description:** 월별 상세 리포트
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "month": "2025-08",
+    "sleep_nights": 29,
+    "avg_sleep_score": 81.7,
+    "sleep_efficiency": 88.4,
+    "weekly_breakdown": [
+      {
+        "week": 1,
+        "avg_score": 79.2,
+        "sleep_debt": -45,
+        "consistency": 0.82
+      }
+    ],
+    "snoring_analysis": {
+      "total_events": 156,
+      "avg_per_night": 5.4,
+      "severity_distribution": {
+        "mild": 78,
+        "moderate": 67,
+        "severe": 11
+      },
+      "improvement_rate": "+23.1%"
+    },
+    "pump_performance": {
+      "total_activations": 134,
+      "success_rate": 92.5,
+      "avg_response_time": 11.8,
+      "comfort_score": 4.2
+    }
+  }
+}
+```
+
+### 💾 하트비트 & 헬스체크 API
+
+#### POST /api/v1/device/{deviceId}/heartbeat
+**Description:** 기기 하트비트 (30초마다)
+
+**Headers:**
+```
+Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
+X-Timestamp: 2025-08-29T14:30:00+09:00
+```
+
+**Request:**
+```json
+{
+  "uptime": 86400,
+  "free_memory": 180000,
+  "wifi_rssi": -45,
+  "battery_level": 85,
+  "pump_angle": 3,
+  "room_temp": 24.2,
+  "room_humidity": 58,
+  "last_pump_action": "2025-08-29T03:25:12+09:00"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "server_time": "2025-08-29T14:30:15+09:00",
+    "next_home_update": "2025-08-29T14:35:00+09:00",
+    "config_updates": {
+      "pump_sensitivity": 8,
+      "max_angle": 12,
+      "night_mode_enabled": true
+    },
+    "commands": [
+      {
+        "type": "pump_adjust",
+        "pump": 0,
+        "reason": "comfort_schedule"
+      }
+    ]
+  }
+}
+```
+
+### 🚀 FOTA (Firmware Over The Air) API
+
+#### GET /api/v1/firmware/check/{deviceId}
+**Description:** 펌웨어 업데이트 확인
+
+**Headers:**
 ```
 Authorization: Bearer <device_token>
 ```
 
-**Response:**
+**Response (Update Available):**
 ```json
 {
   "success": true,
   "data": {
     "version": "1.1.0",
     "download_url": "https://firmware.baegaepro.com/releases/baegaepro-v1.1.0.bin",
-    "sha256": "a1b2c3d4e5f6...",
+    "sha256": "a1b2c3d4e5f6789...",
     "file_size": 1048576,
-    "release_notes": "Bug fixes and performance improvements",
+    "release_notes": "베개 각도 제어 알고리즘 개선, 배터리 효율성 향상",
     "mandatory": false,
-    "released_at": "2025-08-26T10:30:00Z"
+    "released_at": "2025-08-26T10:30:00+09:00",
+    "min_battery_level": 50
   }
 }
 ```
 
-**No Update Available Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "message": "No update available",
-    "current_version": "1.0.0"
-  }
-}
-```
+#### POST /api/v1/firmware/update/progress
+**Description:** 업데이트 진행 상황 보고
 
-### 홈 데이터 조회 API ⭐ **NEW**
-**Endpoint:** `GET /api/v1/home`
-
-**Description:** ESP32 기기가 NEXTION HMI 화면에 표시할 홈 정보를 요청합니다.
-
-**Request Headers:**
+**Headers:**
 ```
 Authorization: Bearer <device_token>
+X-Device-Id: A1B2C3D4
 ```
 
-**Response:**
+**Request:**
+```json
+{
+  "status": "downloading",
+  "progress_percent": 45,
+  "current_step": "Downloading firmware",
+  "estimated_remaining": 120
+}
+```
+
+### 📎 파일 업로드 API
+
+#### POST /api/v1/upload/attachment
+**Description:** 파일 첨부 (수면 기록 관련 사진/메모 등)
+
+**Headers:**
+```
+Authorization: Bearer <user_token>
+Content-Type: multipart/form-data
+```
+
+**Request (Multipart):**
+```
+file: <binary_file_data>
+type: "sleep_note"
+session_id: "sess-uuid-0001"
+description: "수면 환경 사진"
+```
+
+**Response (201):**
 ```json
 {
   "success": true,
   "data": {
-    "currentTime": "2025-01-27 14:30:00",
-    "weather": "Clear",
-    "temperature": "22",
-    "humidity": "65",
-    "sleepScore": "85",
-    "noiseLevel": "24",
-    "alarmTime": "7:20",
-    "status": "Normal Operation"
+    "file_id": "file_uuid_001",
+    "filename": "sleep_environment.jpg",
+    "file_url": "https://cdn.baegaepro.com/uploads/file_uuid_001.jpg",
+    "file_size": 2048576,
+    "mime_type": "image/jpeg",
+    "uploaded_at": "2025-08-29T14:30:00+09:00"
   }
 }
 ```
 
-**응답 필드 설명 (NEXTION 화면 매핑):**
-- `temperature`: 현재 온도 (Page 1, t0: "22°C")
-- `weather`: 날씨 정보 (Page 1, t1: "Clear")
-- `sleepScore`: 수면 점수 (Page 1, t2: "Sleep: 85 points")
-- `noiseLevel`: 소음 레벨 (Page 1, t3: "Noise: 24dB")
-- `alarmTime`: 알람 시간 (Page 1, t4: "Alarm: 7:20")
-- `currentTime`: 현재 시간 (로그용)
-- `humidity`: 습도 (확장 용도)
-- `status`: 전체 상태 메시지
+## 🤖 베개 각도 제어 알고리즘 상세
 
-**Error Response:**
-```json
-{
-  "success": false,
-  "error": "Unauthorized",
-  "message": "Invalid or expired token"
-}
+### 실시간 코골이 감지 프로세스
+
+1. **오디오 신호 전처리**
+   - 16kHz 샘플링으로 수집된 PCM 데이터
+   - 밴드패스 필터 적용 (20Hz - 2kHz)
+   - 노이즈 게이트 적용 (임계값 30dB)
+
+2. **AI 코골이 판별**
+   - CNN 기반 스펙트로그램 분석
+   - 신뢰도 임계값: 85% 이상
+   - False Positive 방지: 연속 3초 이상 감지시만 판정
+
+3. **베개 각도 조절 로직**
+```javascript
+const adjustPumpAngle = async (snoreEvent) => {
+  const currentAngle = await getCurrentPumpAngle(deviceId);
+  const targetAngle = Math.min(12, currentAngle + 2); // 최대 12도
+  
+  const pumpCommand = {
+    pump: Math.round((targetAngle / 12) * 100), // 0-100 범위
+    duration: 45, // 45초간 유지
+    mode: "gradual", // 점진적 상승
+    target_angle: targetAngle,
+    reason: "snore_detected",
+    confidence: snoreEvent.confidence
+  };
+  
+  // 30분 후 자동 복원 스케줄링
+  scheduleAngleReduction(deviceId, targetAngle, 30 * 60);
+  
+  return pumpCommand;
+};
 ```
 
-## NEXTION HMI 화면 연동 가이드 ⭐ **NEW**
+4. **컴포트 관리**
+   - 연속 조절 방지: 최소 5분 간격
+   - 수면 단계 고려: 깊은 수면 시 조절 강도 감소
+   - 사용자 습관 학습: 효과적인 각도 패턴 기억
 
-### 화면 구성
-ESP32-C6 기기는 UART2(RX:12, TX:13)로 NEXTION HMI 디스플레이와 통신합니다.
+## 📊 대시보드 화면 매핑
 
-**Page 0 (설정/연결 모드):**
-- t0: 메인 메시지 ("기기 초기 설정이 필요합니다" 등)
-- t1: 서브 메시지 ("앱을 열어 설정해주세요" 등)
+### NEXTION HMI 페이지 구성
 
-**Page 1 (홈 화면):** 
-- t0: 온도 ("22°C")
-- t1: 날씨 ("Clear")
+**Page 0 (설정/연결 모드)**
+- t0: "기기 초기 설정이 필요합니다"
+- t1: "BaegaePro 앱을 열어 설정해주세요"
+- WiFi 연결 상태 및 프로비저닝 정보 표시
+
+**Page 1 (홈 화면)**
+- t0: 온도 ("22°C") 
+- t1: 날씨 ("맑음")
 - t2: 수면 점수 ("Sleep: 85 points")
 - t3: 소음 레벨 ("Noise: 24dB")
 - t4: 알람 시간 ("Alarm: 7:20")
 
-### 데이터 업데이트 주기
-- **초기 표시**: WiFi 연결 성공 후 즉시
-- **자동 업데이트**: 10회 하트비트(5분)마다 자동 새로고침
-- **수동 업데이트**: NEXTION 터치 이벤트로 가능
+### 모바일 앱 화면 데이터 매핑
 
-### 서버 구현 예시 코드
+**메인 대시보드**
+- 지난 밤 수면 데이터: `/api/v1/analytics/dashboard?period=1d`
+- 수면 점수: 65-100점 범위, 색상 코딩
+- 수면 시간: "5시간 30분" 형태로 표시
+- 최근 7일 트렌드: 막대 그래프
 
-```javascript
-// routes/home.js
-const express = require('express');
-const router = express.Router();
-const moment = require('moment-timezone');
-const axios = require('axios');
+**월별 리포트**
+- 캘린더 뷰: `/api/v1/analytics/monthly/{year}/{month}`
+- 각 날짜별 수면 점수 표시
+- 수면 부족/과다 인디케이터
+- 일관성 점수 및 개선 제안
 
-// 외부 API로 날씨 정보 가져오기
-const getWeatherInfo = async () => {
-  try {
-    const response = await axios.get(
-      `https://api.openweathermap.org/data/2.5/weather?q=Seoul&appid=${process.env.WEATHER_API_KEY}&units=metric`
-    );
-    return {
-      weather: response.data.weather[0].description,
-      temperature: Math.round(response.data.main.temp).toString(),
-      humidity: response.data.main.humidity.toString()
-    };
-  } catch (error) {
-    console.error('Weather API error:', error);
-    return {
-      weather: '날씨 정보 없음',
-      temperature: '--',
-      humidity: '--'
-    };
-  }
-};
+## 🔧 환경 설정
 
-// GET /api/v1/home
-router.get('/home', authMiddleware, async (req, res) => {
-  try {
-    const deviceId = req.deviceId;
-    
-    // 기기 상태 확인
-    const device = await Device.findOne({ device_id: deviceId });
-    if (!device) {
-      return res.status(404).json({
-        success: false,
-        error: 'Device not found'
-      });
-    }
-    
-    // 현재 시간 (한국 시간)
-    const currentTime = moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss');
-    
-    // 날씨 정보 가져오기
-    const weatherData = await getWeatherInfo();
-    
-    // 기기 상태 메시지 생성
-    const statusMessage = generateStatusMessage(device);
-    
-    const homeData = {
-      currentTime,
-      weather: weatherData.weather,
-      temperature: weatherData.temperature,
-      humidity: weatherData.humidity,
-      sleepScore: generateSleepScore(device),
-      noiseLevel: generateNoiseLevel(),
-      alarmTime: getNextAlarmTime(device),
-      status: statusMessage
-    };
-    
-    // 로그 기록
-    await DeviceLog.create({
-      device_id: deviceId,
-      event_type: 'home_data_request',
-      payload: homeData
-    });
-    
-    res.json({
-      success: true,
-      data: homeData
-    });
-    
-  } catch (error) {
-    console.error('Home data error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: 'Failed to fetch home data'
-    });
-  }
-});
-
-// 기기 상태 메시지 생성
-const generateStatusMessage = (device) => {
-  const lastSeen = moment(device.last_seen);
-  const now = moment();
-  const diffMinutes = now.diff(lastSeen, 'minutes');
-  
-  if (diffMinutes < 2) {
-    return 'Normal Operation';
-  } else if (diffMinutes < 10) {
-    return `Active ${diffMinutes}min ago`;
-  } else {
-    return 'Inactive';
-  }
-};
-
-// 수면 점수 생성 (대체 데이터)
-const generateSleepScore = (device) => {
-  // 실제 구현에서는 수면 추적 데이터를 사용
-  const scores = ['82', '85', '91', '78', '88'];
-  return scores[Math.floor(Math.random() * scores.length)];
-};
-
-// 소음 레벨 생성
-const generateNoiseLevel = () => {
-  // 실제 구현에서는 IoT 센서 데이터를 사용
-  const levels = ['24', '26', '22', '28', '30'];
-  return levels[Math.floor(Math.random() * levels.length)];
-};
-
-// 다음 알람 시간 가져오기
-const getNextAlarmTime = (device) => {
-  // 실제 구현에서는 사용자 설정에서 가져오기
-  return device.alarm_time || '7:20';
-};
-
-module.exports = router;
-```
-
-### FOTA 서버 구현 예시 ⭐ **NEW FOTA**
-
-```javascript
-// routes/firmware.js
-const express = require('express');
-const router = express.Router();
-const semver = require('semver');
-const crypto = require('crypto');
-const fs = require('fs').promises;
-
-// GET /api/v1/firmware/check/:deviceId
-router.get('/check/:deviceId', authMiddleware, async (req, res) => {
-  try {
-    const deviceId = req.params.deviceId;
-    
-    // 기기 정보 조회
-    const device = await Device.findOne({ device_id: deviceId });
-    if (!device) {
-      return res.status(404).json({
-        success: false,
-        error: 'Device not found'
-      });
-    }
-    
-    const currentVersion = device.firmware_version || '1.0.0';
-    
-    // 최신 펌웨어 조회
-    const latestFirmware = await FirmwareRelease.findOne({
-      device_type: 'baegaepro',
-      status: 'stable',
-      released_at: { $lte: new Date() }
-    }).sort({ released_at: -1 });
-    
-    if (!latestFirmware) {
-      return res.json({
-        success: true,
-        data: {
-          message: 'No firmware available',
-          current_version: currentVersion
-        }
-      });
-    }
-    
-    // 버전 비교 (semver 사용)
-    const updateAvailable = semver.gt(latestFirmware.version, currentVersion);
-    
-    if (!updateAvailable) {
-      return res.json({
-        success: true,
-        data: {
-          message: 'No update available',
-          current_version: currentVersion,
-          latest_version: latestFirmware.version
-        }
-      });
-    }
-    
-    // 업데이트 가능한 경우
-    const updateData = {
-      version: latestFirmware.version,
-      download_url: latestFirmware.file_url,
-      sha256: latestFirmware.sha256_hash,
-      file_size: latestFirmware.file_size,
-      release_notes: latestFirmware.release_notes || 'Performance improvements and bug fixes',
-      mandatory: latestFirmware.mandatory,
-      released_at: latestFirmware.released_at
-    };
-    
-    // FOTA 체크 로그 기록
-    await DeviceLog.create({
-      device_id: deviceId,
-      event_type: 'fota_check',
-      payload: {
-        current_version: currentVersion,
-        available_version: latestFirmware.version,
-        update_available: true
-      }
-    });
-    
-    res.json({
-      success: true,
-      data: updateData
-    });
-    
-  } catch (error) {
-    console.error('FOTA check error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: 'Failed to check firmware updates'
-    });
-  }
-});
-
-// POST /api/v1/firmware/update/start
-router.post('/update/start', authMiddleware, async (req, res) => {
-  try {
-    const deviceId = req.deviceId;
-    const { target_version } = req.body;
-    
-    // 현재 업데이트 상태 확인
-    const ongoingUpdate = await FirmwareUpdate.findOne({
-      device_id: deviceId,
-      status: { $in: ['started', 'downloading', 'verifying', 'installing'] }
-    });
-    
-    if (ongoingUpdate) {
-      return res.status(409).json({
-        success: false,
-        error: 'Update already in progress'
-      });
-    }
-    
-    const device = await Device.findOne({ device_id: deviceId });
-    const currentVersion = device.firmware_version || '1.0.0';
-    
-    // 업데이트 기록 생성
-    const updateRecord = await FirmwareUpdate.create({
-      device_id: deviceId,
-      from_version: currentVersion,
-      to_version: target_version,
-      status: 'started'
-    });
-    
-    // 디바이스 상태 업데이트
-    await Device.updateOne(
-      { device_id: deviceId },
-      { status: 'updating' }
-    );
-    
-    res.json({
-      success: true,
-      message: 'Firmware update started',
-      update_id: updateRecord.id
-    });
-    
-    // 비동기로 모바일 앱에 알림 전송
-    setImmediate(() => {
-      sendDeviceAlert(
-        deviceId,
-        'fota_started',
-        `기기 펌웨어 업데이트가 시작되었습니다. (${currentVersion} → ${target_version})`
-      );
-    });
-    
-  } catch (error) {
-    console.error('FOTA start error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to start firmware update'
-    });
-  }
-});
-
-// POST /api/v1/firmware/update/progress
-router.post('/update/progress', authMiddleware, async (req, res) => {
-  try {
-    const deviceId = req.deviceId;
-    const { status, progress_percent, error_message } = req.body;
-    
-    const updateRecord = await FirmwareUpdate.findOneAndUpdate(
-      {
-        device_id: deviceId,
-        status: { $in: ['started', 'downloading', 'verifying', 'installing'] }
-      },
-      {
-        status,
-        progress_percent: progress_percent || 0,
-        error_message: error_message || null,
-        ...(status === 'completed' || status === 'failed' ? { completed_at: new Date() } : {})
-      },
-      { new: true }
-    );
-    
-    if (!updateRecord) {
-      return res.status(404).json({
-        success: false,
-        error: 'Update record not found'
-      });
-    }
-    
-    // 업데이트 완료 시 기기 정보 업데이트
-    if (status === 'completed') {
-      await Device.updateOne(
-        { device_id: deviceId },
-        {
-          firmware_version: updateRecord.to_version,
-          status: 'online'
-        }
-      );
-      
-      // 성공 알림
-      await sendDeviceAlert(
-        deviceId,
-        'fota_completed',
-        `펌웨어 업데이트가 성공적으로 완료되었습니다. (${updateRecord.to_version})`
-      );
-    } else if (status === 'failed') {
-      await Device.updateOne(
-        { device_id: deviceId },
-        { status: 'error' }
-      );
-      
-      // 실패 알림
-      await sendDeviceAlert(
-        deviceId,
-        'fota_failed',
-        `펌웨어 업데이트가 실패했습니다: ${error_message}`
-      );
-    }
-    
-    res.json({
-      success: true,
-      message: 'Progress updated'
-    });
-    
-  } catch (error) {
-    console.error('FOTA progress error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update progress'
-    });
-  }
-});
-
-// GET /api/v1/firmware/releases - 관리자용
-router.get('/releases', adminAuthMiddleware, async (req, res) => {
-  try {
-    const releases = await FirmwareRelease.find()
-      .sort({ created_at: -1 })
-      .limit(20);
-    
-    res.json({
-      success: true,
-      data: releases
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch releases'
-    });
-  }
-});
-
-// POST /api/v1/firmware/releases - 새 펌웨어 릴리스 등록
-router.post('/releases', adminAuthMiddleware, upload.single('firmware'), async (req, res) => {
-  try {
-    const { version, release_notes, mandatory, device_type } = req.body;
-    const file = req.file;
-    
-    if (!file) {
-      return res.status(400).json({
-        success: false,
-        error: 'Firmware file required'
-      });
-    }
-    
-    // 파일 SHA256 해시 계산
-    const fileBuffer = await fs.readFile(file.path);
-    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    
-    // S3 또는 파일 서버에 업로드 (예시)
-    const fileUrl = await uploadFirmwareFile(file, version);
-    
-    const release = await FirmwareRelease.create({
-      version,
-      file_url: fileUrl,
-      file_size: file.size,
-      sha256_hash: hash,
-      device_type: device_type || 'baegaepro',
-      release_notes,
-      mandatory: mandatory === 'true',
-      status: 'stable',
-      released_at: new Date()
-    });
-    
-    res.json({
-      success: true,
-      message: 'Firmware release created',
-      data: release
-    });
-    
-  } catch (error) {
-    console.error('Release creation error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create release'
-    });
-  }
-});
-
-module.exports = router;
-```
-
-### FOTA 파일 관리 예시
-
-```javascript
-// services/firmwareService.js
-const AWS = require('aws-sdk');
-const s3 = new AWS.S3();
-
-// S3에 펌웨어 파일 업로드
-const uploadFirmwareFile = async (file, version) => {
-  const key = `firmware/baegaepro/v${version}/baegaepro-${version}.bin`;
-  
-  const uploadParams = {
-    Bucket: process.env.S3_FIRMWARE_BUCKET,
-    Key: key,
-    Body: fs.createReadStream(file.path),
-    ContentType: 'application/octet-stream',
-    ACL: 'private'
-  };
-  
-  const result = await s3.upload(uploadParams).promise();
-  
-  // 임시 파일 삭제
-  await fs.unlink(file.path);
-  
-  // 서명된 URL 반환 (다운로드 시 인증 필요)
-  return s3.getSignedUrl('getObject', {
-    Bucket: process.env.S3_FIRMWARE_BUCKET,
-    Key: key,
-    Expires: 3600 // 1시간 유효
-  });
-};
-
-// 펌웨어 무결성 검증
-const verifyFirmwareIntegrity = async (fileBuffer, expectedHash) => {
-  const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-  return hash === expectedHash;
-};
-
-// 펌웨어 보안 스캔 (예시)
-const scanFirmwareSecurity = async (filePath) => {
-  // 실제로는 바이러스 스캔, 서명 검증 등
-  // 예: ClamAV, VirusTotal API 연동
-  return { safe: true, threats: [] };
-};
-
-module.exports = {
-  uploadFirmwareFile,
-  verifyFirmwareIntegrity,
-  scanFirmwareSecurity
-};
-```
-
-### 환경 변수 설정
+### 필수 환경 변수
 ```env
-# .env 파일
+# 데이터베이스
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=baegaepro_prod
+DB_USER=baegaepro_user
+DB_PASS=secure_db_password
+
+# Redis 캐싱
+REDIS_URL=redis://localhost:6379
+REDIS_PREFIX=bgpro:
+DATA_CACHE_TTL=300
+
+# JWT 인증
+JWT_SECRET=your_jwt_signing_secret_key_here
+JWT_EXPIRES_IN=24h
+REFRESH_TOKEN_EXPIRES_IN=30d
+
+# 외부 API
 WEATHER_API_KEY=your_openweathermap_api_key
-TIMEZONE=Asia/Seoul
-DEFAULT_WEATHER_CITY=Seoul
-```
+WEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
+WEATHER_CACHE_TTL=1800
 
-### 캐싱 전략 (성능 최적화)
-```javascript
-// Redis로 날씨 데이터 캐싱 (5분마다 업데이트)
-const getCachedWeatherInfo = async () => {
-  const cacheKey = 'weather:seoul';
-  const cached = await redis.get(cacheKey);
-  
-  if (cached) {
-    return JSON.parse(cached);
-  }
-  
-  const weatherData = await getWeatherInfo();
-  await redis.setex(cacheKey, 300, JSON.stringify(weatherData)); // 5분 캐시
-  return weatherData;
-};  
-```
+# FCM 푸시 알림
+FCM_SERVER_KEY=your_firebase_cloud_messaging_key
+FCM_PROJECT_ID=baegaepro-app
 
-### 패키지 설치 및 라이브러리
-```bash
-npm install moment-timezone axios redis
-npm install --save-dev jest supertest
-```
+# AWS S3 파일 스토리지
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+S3_BUCKET_NAME=baegaepro-audio-storage
+S3_REGION=ap-northeast-2
 
-### ESP32 요청 패턴 및 서버 최적화
-
-**하트비트 요청 네트워크 최적화:**
-```javascript
-// 네트워크 요청 최소화를 위한 체크
-router.post('/device/:deviceId/heartbeat', authMiddleware, async (req, res) => {
-  // 빠른 응답으로 ESP32 타임아웃 방지
-  res.json({ success: true, message: 'heartbeat received' });
-  
-  // 비동기 처리
-  setImmediate(async () => {
-    try {
-      await updateDeviceLastSeen(req.deviceId);
-      await logHeartbeat(req.deviceId, req.body);
-    } catch (error) {
-      console.error('Heartbeat processing error:', error);
-    }
-  });
-});
-```
-
-**에러 처리 및 폴백:**
-```javascript
-// ESP32가 서버 오류 시 대비할 수 있도록 대체 데이터 제공
-const getHomeDataWithFallback = async (deviceId) => {
-  try {
-    const homeData = await getFullHomeData(deviceId);
-    return homeData;
-  } catch (error) {
-    console.error(`Home data error for ${deviceId}:`, error);
-    
-    // 대체 데이터 반환
-    return {
-      currentTime: moment().tz('Asia/Seoul').format('YYYY-MM-DD HH:mm:ss'),
-      weather: '오프라인 모드',
-      temperature: '--',
-      humidity: '--',
-      status: '네트워크 오류'
-    };
-  }
-};
-```
-
-### 실시간 알림 시스템
-```javascript
-// FCM 또는 WebSocket을 이용한 모바일 앱 알림
-const sendDeviceAlert = async (deviceId, alertType, message) => {
-  try {
-    const device = await Device.findOne({ device_id: deviceId });
-    if (!device) return;
-    
-    // 모바일 앱에 알림 전송
-    await fcm.send({
-      token: device.user_fcm_token,
-      notification: {
-        title: 'BaegaePro 알림',
-        body: message
-      },
-      data: {
-        deviceId,
-        alertType,
-        timestamp: new Date().toISOString()
-      }
-    });
-    
-  } catch (error) {
-    console.error('Alert sending failed:', error);
-  }
-};
-
-// 기기 비활성 상태 모니터링
-const checkInactiveDevices = async () => {
-  const threshold = moment().subtract(10, 'minutes');
-  const inactiveDevices = await Device.find({
-    last_seen: { $lt: threshold },
-    status: { $ne: 'offline' }
-  });
-  
-  for (const device of inactiveDevices) {
-    await Device.updateOne(
-      { device_id: device.device_id },
-      { status: 'offline' }
-    );
-    
-    await sendDeviceAlert(
-      device.device_id,
-      'offline',
-      `기기 ${device.device_name}이 비활성 상태입니다.`
-    );
-  }
-};
-
-// 5분마다 비활성 기기 체크
-setInterval(checkInactiveDevices, 5 * 60 * 1000);
-```
-
-## 데이터베이스 스키마
-
-### devices 테이블
-```sql
-CREATE TABLE devices (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  device_id VARCHAR(16) UNIQUE NOT NULL,
-  user_id BIGINT NOT NULL,
-  device_name VARCHAR(100),
-  device_type VARCHAR(50) DEFAULT 'baegaepro',
-  status ENUM('registered', 'online', 'offline', 'error') DEFAULT 'registered',
-  last_seen TIMESTAMP,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_device_id (device_id),
-  INDEX idx_user_id (user_id),
-  INDEX idx_status (status),
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
-```
-
-### device_logs 테이블
-```sql
-CREATE TABLE device_logs (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  device_id VARCHAR(16) NOT NULL,
-  event_type VARCHAR(50) NOT NULL,
-  payload JSON,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_device_id (device_id),
-  INDEX idx_event_type (event_type),
-  INDEX idx_created_at (created_at),
-  FOREIGN KEY (device_id) REFERENCES devices(device_id)
-);
-```
-
-### device_tokens 테이블
-```sql
-CREATE TABLE device_tokens (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  device_id VARCHAR(16) NOT NULL,
-  token_hash VARCHAR(255) NOT NULL,
-  expires_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY unique_device_token (device_id),
-  INDEX idx_token_hash (token_hash),
-  FOREIGN KEY (device_id) REFERENCES devices(device_id)
-);
-```
-
-### firmware_releases 테이블 ⭐ **NEW FOTA**
-```sql
-CREATE TABLE firmware_releases (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  version VARCHAR(32) NOT NULL UNIQUE,
-  file_url VARCHAR(512) NOT NULL,
-  file_size BIGINT NOT NULL,
-  sha256_hash VARCHAR(64) NOT NULL,
-  device_type VARCHAR(50) DEFAULT 'baegaepro',
-  release_notes TEXT,
-  mandatory BOOLEAN DEFAULT FALSE,
-  min_version VARCHAR(32), -- 최소 요구 버전
-  max_version VARCHAR(32), -- 최대 지원 버전 
-  status ENUM('draft', 'beta', 'stable', 'deprecated') DEFAULT 'stable',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  released_at TIMESTAMP,
-  INDEX idx_version (version),
-  INDEX idx_device_type (device_type),
-  INDEX idx_status (status),
-  INDEX idx_released_at (released_at)
-);
-```
-
-### firmware_updates 테이블 ⭐ **NEW FOTA**
-```sql
-CREATE TABLE firmware_updates (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  device_id VARCHAR(16) NOT NULL,
-  from_version VARCHAR(32),
-  to_version VARCHAR(32) NOT NULL,
-  status ENUM('started', 'downloading', 'verifying', 'installing', 'completed', 'failed', 'rolled_back') DEFAULT 'started',
-  progress_percent TINYINT DEFAULT 0,
-  error_message TEXT,
-  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  completed_at TIMESTAMP NULL,
-  INDEX idx_device_id (device_id),
-  INDEX idx_status (status),
-  INDEX idx_started_at (started_at),
-  FOREIGN KEY (device_id) REFERENCES devices(device_id)
-);
-```
-
-## 인증 시스템
-
-### 기기 토큰 생성
-1. 사용자가 모바일 앱에서 기기 등록 시 임시 토큰 생성
-2. ESP32가 프로비저닝 과정에서 이 토큰을 받아 서버에 전송
-3. 서버는 토큰 검증 후 기기 전용 장기 토큰 발급
-
-### 토큰 검증 미들웨어
-```javascript
-const authMiddleware = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ error: 'Token required' });
-  }
-  
-  // JWT 또는 해시 기반 토큰 검증
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-  
-  req.deviceId = decoded.deviceId;
-  req.userId = decoded.userId;
-  next();
-};
-```
-
-## 실시간 통신
-
-### WebSocket 연결
-기기 상태 실시간 모니터링을 위한 WebSocket 서버 구현
-
-```javascript
-const WebSocket = require('ws');
-
-const wss = new WebSocket.Server({ port: 8080 });
-
-wss.on('connection', (ws, req) => {
-  ws.on('message', (message) => {
-    const data = JSON.parse(message);
-    
-    // 기기별 채널 구독
-    if (data.type === 'subscribe') {
-      ws.deviceId = data.deviceId;
-      ws.userId = data.userId;
-    }
-  });
-});
-
-// 기기 상태 변경시 해당 사용자에게 브로드캐스트
-const broadcastDeviceStatus = (deviceId, status) => {
-  wss.clients.forEach(client => {
-    if (client.deviceId === deviceId && client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({
-        type: 'device_status',
-        deviceId,
-        status,
-        timestamp: new Date().toISOString()
-      }));
-    }
-  });
-};
-```
-
-## 보안 고려사항
-
-### 1. Rate Limiting
-```javascript
-const rateLimit = require('express-rate-limit');
-
-const deviceApiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1분
-  max: 30, // 최대 30회 요청
-  message: 'Too many requests from this device'
-});
-```
-
-### 2. 입력값 검증
-```javascript
-const { body, param, validationResult } = require('express-validator');
-
-const deviceIdValidation = param('deviceId')
-  .isAlphanumeric()
-  .isLength({ min: 8, max: 8 })
-  .withMessage('Device ID must be 8 alphanumeric characters');
-```
-
-### 3. HTTPS 강제
-```javascript
-app.use((req, res, next) => {
-  if (req.header('x-forwarded-proto') !== 'https') {
-    res.redirect(`https://${req.header('host')}${req.url}`);
-  } else {
-    next();
-  }
-});
-```
-
-## 모니터링 및 로깅
-
-### 로깅 시스템
-```javascript
-const winston = require('winston');
-
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
-    new winston.transports.Console()
-  ]
-});
-```
-
-### 메트릭 수집
-- 기기 연결 수
-- API 응답 시간
-- 에러율
-- 하트비트 간격
-
-## 배포 환경
-
-### Docker 구성
-```dockerfile
-FROM node:18-alpine
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-
-COPY . .
-EXPOSE 3000
-
-CMD ["node", "src/server.js"]
-```
-
-### 환경 변수
-```env
+# 서버 설정
 NODE_ENV=production
 PORT=3000
-DB_HOST=localhost
-DB_USER=baegaepro
-DB_PASS=secure_password
-DB_NAME=baegaepro_db
-REDIS_URL=redis://localhost:6379
-JWT_SECRET=your_jwt_secret
 CORS_ORIGIN=https://app.baegaepro.com
-
-# ⭐ NEW: 홈 기능을 위한 추가 환경 변수
-WEATHER_API_KEY=your_openweathermap_api_key
-WEATHER_CITY=Seoul
 TIMEZONE=Asia/Seoul
-FCM_SERVER_KEY=your_fcm_server_key
-DATA_CACHE_TTL=300
+LOG_LEVEL=info
+
+# AI 분석 서비스
+AI_SERVICE_URL=https://ai.baegaepro.com
+AI_API_KEY=your_ai_service_api_key
+SNORE_DETECTION_THRESHOLD=0.85
 ```
 
-## 개발 시작하기
+## 🚀 배포 및 스케일링
 
-### 1. 프로젝트 초기화
-```bash
-mkdir baegaepro-backend
-cd baegaepro-backend
-npm init -y
-npm install express mongoose redis socket.io jsonwebtoken bcryptjs
-npm install moment-timezone axios helmet cors
-npm install -D nodemon jest supertest
-```
-
-### 2. 기본 서버 구조
-```javascript
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-
-const app = express();
-
-app.use(helmet());
-app.use(cors());
-app.use(express.json());
-
-// Routes
-app.use('/api/v1/device', require('./routes/device'));
-app.use('/api/v1/auth', require('./routes/auth'));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-```
-
-### 3. 테스트 코드 작성
-```javascript
-const request = require('supertest');
-const app = require('../src/app');
-
-describe('Device API', () => {
-  test('POST /api/v1/device/new', async () => {
-    const response = await request(app)
-      .post('/api/v1/device/new')
-      .send({ deviceId: 'A1B2C3D4' })
-      .set('Authorization', 'Bearer valid_token');
-      
-    expect(response.status).toBe(200);
-    expect(response.body.success).toBe(true);
-  });
+### Docker Compose 구성
+```yaml
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - mysql
+      - redis
+      - timescaledb
   
-  // ⭐ NEW: 홈 데이터 API 테스트
-  test('GET /api/v1/home', async () => {
-    const response = await request(app)
-      .get('/api/v1/home')
-      .set('Authorization', 'Bearer device_token');
-      
-    expect(response.status).toBe(200);
-    expect(response.body.success).toBe(true);
-    expect(response.body.data).toHaveProperty('currentTime');
-    expect(response.body.data).toHaveProperty('weather');
-    expect(response.body.data).toHaveProperty('temperature');
-    expect(response.body.data).toHaveProperty('status');
-  });
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: baegaepro_prod
+    volumes:
+      - mysql_data:/var/lib/mysql
   
-  test('POST /api/v1/device/:deviceId/heartbeat', async () => {
-    const response = await request(app)
-      .post('/api/v1/device/A1B2C3D4/heartbeat')
-      .send({ uptime: 3600, freeMemory: 180000 })
-      .set('Authorization', 'Bearer device_token');
-      
-    expect(response.status).toBe(200);
-    expect(response.body.success).toBe(true);
-  });
-});
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+  
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      POSTGRES_DB: baegaepro_timeseries
+    volumes:
+      - timeseries_data:/var/lib/postgresql/data
 
-// 모크 테스트
-const mockWeatherAPI = () => {
-  jest.mock('axios', () => ({
-    get: jest.fn().mockResolvedValue({
-      data: {
-        weather: [{ description: '맑음' }],
-        main: { temp: 22, humidity: 65 }
-      }
-    })
-  }));
-};
+volumes:
+  mysql_data:
+  redis_data:
+  timeseries_data:
 ```
 
-## 성능 최적화
+### 성능 최적화 전략
 
-### 1. 데이터베이스 인덱싱
-- device_id에 고유 인덱스
-- user_id에 인덱스
-- created_at에 인덱스 (로그 조회용)
+1. **데이터베이스 최적화**
+   - 센서 데이터는 TimescaleDB 사용
+   - 인덱싱 전략: compound index 활용
+   - 파티셔닝: 월별 테이블 분할
 
-### 2. 캐싱 전략
-```javascript
-const redis = require('redis');
-const client = redis.createClient();
+2. **캐싱 전략**
+   - 날씨 데이터: 30분 캐시
+   - 사용자 세션: 24시간 캐시
+   - 기기 상태: 5분 캐시
 
-const cacheDeviceStatus = async (deviceId, status) => {
-  await client.setex(`device:${deviceId}:status`, 300, JSON.stringify(status));
-};
-```
+3. **실시간 처리**
+   - WebSocket 연결: 기기별 채널 구독
+   - 메시지 큐: Redis Streams 활용
+   - 배치 처리: Cron 기반 데이터 집계
 
-### 3. Connection Pooling
-```javascript
-const mysql = require('mysql2/promise');
-
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-```
-
-이 가이드를 참고하여 확장 가능하고 안정적인 IoT 백엔드 시스템을 구축할 수 있습니다.
-
-## 구현 체크리스트 ⭐ **NEW**
-
-### 필수 API 구현
-- [ ] `POST /api/v1/device/new` - 기기 등록
-- [ ] `POST /api/v1/device/{deviceId}/heartbeat` - 하트비트
-- [ ] `GET /api/v1/home` - 홈 데이터 조회 (NEXTION 용)
-- [ ] `POST /api/v1/device/{deviceId}/status` - 상태 업데이트
-- [ ] `GET /api/v1/firmware/check/{deviceId}` - FOTA 체크 ⭐ **NEW**
-- [ ] `POST /api/v1/firmware/update/start` - FOTA 시작 ⭐ **NEW**
-- [ ] `POST /api/v1/firmware/update/progress` - FOTA 진행 상황 ⭐ **NEW**
-
-### 외부 API 연동
-- [ ] OpenWeatherMap API 연동
-- [ ] 시간대 처리 (moment-timezone)
-- [ ] FCM 푸시 알림 (선택사항)
-
-### 데이터베이스 설정
-- [ ] devices 테이블 생성
-- [ ] device_logs 테이블 생성
-- [ ] device_tokens 테이블 생성
-- [ ] firmware_releases 테이블 생성 ⭐ **NEW FOTA**
-- [ ] firmware_updates 테이블 생성 ⭐ **NEW FOTA**
-- [ ] 인덱스 설정 (device_id, user_id, created_at, version, status)
-
-### 캐싱 및 성능
-- [ ] Redis 캐싱 설정
-- [ ] 날씨 데이터 5분 캐싱
-- [ ] 하트비트 비동기 처리
-- [ ] Connection Pooling
-
-### 보안 및 인증
-- [ ] JWT 토큰 검증
-- [ ] Rate Limiting
-- [ ] HTTPS 강제
-- [ ] 입력값 검증
-
-### 모니터링 및 로깅
-- [ ] Winston 로깅 설정
-- [ ] 기기 상태 모니터링
-- [ ] 비활성 기기 알림
-- [ ] API 응답 시간 측정
-
-### 테스트
-- [ ] 단위 테스트 (Jest)
-- [ ] API 통합 테스트
-- [ ] 모킹 테스트 (외부 API)
-
-### 배포
-- [ ] Docker 컨테이너화
-- [ ] 환경 변수 설정
-- [ ] PM2 프로세스 매니저
-- [ ] 로드 밸런싱 (선택사항)
-
-### FOTA 파일 관리 ⭐ **NEW**
-- [ ] AWS S3 또는 파일 서버 설정
-- [ ] 펌웨어 파일 업로드 API
-- [ ] SHA256 해시 검증
-- [ ] 서명된 URL 생성 (보안)
-- [ ] 파일 버전 관리 (semver)
-- [ ] 파일 무결성 검증
-
-### FOTA 보안 ⭐ **NEW**
-- [ ] 펌웨어 디지털 서명
-- [ ] 다운로드 URL 인증
-- [ ] 펌웨어 보안 스캔
-- [ ] 롱백 메커니즘
-- [ ] 비상 대응 계획
-
-### FOTA 모니터링 ⭐ **NEW**
-- [ ] 업데이트 진행 상황 대시보드
-- [ ] 실패율 모니터링
-- [ ] 네트워크 사용량 추적
-- [ ] 디바이스별 업데이트 로그
-- [ ] 알림 시스템 (FCM/웹소켓)
-
-### ESP32 펌웨어 연동 확인
-- [ ] NEXTION Page 0 설정 모드 구성 (t0: 메인 메시지, t1: 서브 메시지)
-- [ ] NEXTION Page 1 홈 모드 구성 (t0: 온도, t1: 날씨, t2: 수면점수, t3: 소음, t4: 알람)
-- [ ] 5분 주기 홈 데이터 업데이트
-- [ ] 1시간 주기 FOTA 체크 ⭐ **NEW**
-- [ ] OTA 파티션 관리 ⭐ **NEW**
-- [ ] 롤백 기능 구현 ⭐ **NEW**
-- [ ] 네트워크 오류 시 폴백 처리
-- [ ] NEXTION 터치 이벤트 처리 (설정, WiFi 목록, 새로고침, 초기화)
+## 📋 개발 체크리스트
