@@ -3,539 +3,307 @@
 ╠═╝║║  ║  ║ ║║║║  ╠═╝╠╦╝║ ║
 ╩  ╩╩═╝╩═╝╚═╝╚╩╝  ╩  ╩╚═╚═╝
 
- * 베개프로 압력제어시스템 v3.2
- * 
- * [고급 압력 제어 알고리즘 구현]
- * 1. PWM 기반 점진적 압력 주입 시스템 (20ms 듀티사이클) - 바람 넣을 때만
- * 2. 고정 측정 시간: 790ms (0.79초)
- * 3. 다중 센서 기반 실시간 압력 모니터링 시스템
- * 4. 자동 압력 유지 알고리즘 (10분 주기 압력 보정)
- * 5. 정밀 방출 제어: 1% 압력당 30초 타이밍 제어
- * 6. 리듬 패턴 기반 알람 시스템 (교대 모터 제어)
- * 7. 실시간 시리얼 통신 기반 원격 제어 인터페이스
- * 8. 좌우 독립 압력 안전 임계값 설정
- * 9. JSON 응답 및 디버깅 제어 기능
+ * 베개프로 압력제어시스템 v4.0 (시간기반 주입)
  */
 
 #include <SoftwareSerial.h>
 SoftwareSerial uartBridge(13, -1);
 
-#define MAX_PRESSURE_PSI_L_INITIAL 2.1  // 최초 측정용 좌측 최대 압력
-#define MAX_PRESSURE_PSI_R_INITIAL 2  // 최초 측정용 우측 최대 압력
-#define MAX_PRESSURE_PSI_L_CONTINUOUS 1.3  // 연속 동작용 좌측 최대 압력
-#define MAX_PRESSURE_PSI_R_CONTINUOUS 1.4   // 연속 동작용 우측 최대 압력
-#define PUMP_TOGGLE_INTERVAL 5000
-#define MEASUREMENT_DURATION 990
+#define LEFT_PUMP_RATIO 5.0     // 100ms당 5% 주입
+#define RIGHT_PUMP_RATIO 5.0    // 100ms당 5% 주입
+#define LEFT_AIR_TIME 30000     // 1% 빼는데 30초
+#define RIGHT_AIR_TIME 30000    // 1% 빼는데 30초
+#define MAX_PRESSURE_PSI_L_CONTINUOUS 0.95
+#define MAX_PRESSURE_PSI_R_CONTINUOUS 0.7
+#define MAINTAIN_INTERVAL 600000
+#define MAINTAIN_BOOST 5.0
+#define MIN_MAINTAIN_LEVEL 30.0
+#define MAX_MOTOR_ON_TIME 50
 #define DEBUG 1
 
-const int ALARM_MOTOR = 2;
-const int LEFT_PUMP = 3;
-const int ALARM_MOTOR_2 = 5;
-const int RIGHT_PUMP = 7;
-const int LEFT_AIR_PUMP = 10;
-const int RIGHT_AIR_PUMP = 11;
+const int ALARM_MOTOR = 2, LEFT_PUMP = 3, ALARM_MOTOR_2 = 5;
+const int RIGHT_PUMP = 7, LEFT_AIR_PUMP = 10, RIGHT_AIR_PUMP = 11;
+const int PRESSURE_LEFT = A0, PRESSURE_RIGHT = A1;
 
-const int PRESSURE_LEFT = A0;
-const int PRESSURE_RIGHT = A1;
+const byte rhythmPattern[] = {40, 10, 25, 40, 15, 40, 10, 25, 25, 40, 10, 40, 15, 25, 40, 10};
 
-const unsigned long rhythmPattern[][2] = {
-  {0, 40}, {240, 10}, {490, 25}, {740, 40},
-  {990, 15}, {1240, 40}, {1490, 10}, {1740, 25},
-  {1990, 25}, {2240, 40}, {2490, 10}, {2740, 40},
-  {2990, 15}, {3240, 25}, {3490, 40}, {3740, 10},
-  {3990, 40}, {4240, 10}, {4490, 25}, {4740, 40},
-  {4990, 15}, {5240, 40}, {5490, 10}, {5740, 25},
-  {5990, 25}, {6240, 40}, {6490, 10}, {6740, 40},
-  {6990, 15}, {7240, 25}, {7490, 40}, {7740, 10}
-};
-const int patternLength = sizeof(rhythmPattern) / sizeof(rhythmPattern[0]);
+unsigned long alarmStartTime, lastPrintTime, leftMaintainTime, rightMaintainTime;
+unsigned long leftPumpStartTime, rightPumpStartTime, leftAirStartTime, rightAirStartTime;
+unsigned long leftLastOverTime, rightLastOverTime;
+byte alarmIndex = 0, leftOverCount = 0, rightOverCount = 0;
+float leftTargetPressure = 0, rightTargetPressure = 0;
+float leftCurrentLevel = 0, rightCurrentLevel = 0;
 
-unsigned long alarmStartMillis;
-int alarmPatternIndex = 0;
-bool alarmActive = false;
-
-float leftTargetPressure = 0;
-float rightTargetPressure = 0;
-bool leftPumpAuto = false;
-bool rightPumpAuto = false;
-bool leftAirPumpAuto = false;
-bool rightAirPumpAuto = false;
-unsigned long leftAirPumpStartTime = 0;
-unsigned long rightAirPumpStartTime = 0;
-unsigned long leftAirPumpDuration = 0;
-unsigned long rightAirPumpDuration = 0;
-unsigned long lastPrintTime = 0;
-unsigned long leftLastCheckTime = 0;
-unsigned long rightLastCheckTime = 0;
-bool leftAutoMaintain = false;
-bool rightAutoMaintain = false;
-unsigned long leftPumpToggleTime = 0;
-unsigned long rightPumpToggleTime = 0;
-bool leftPumpToggleState = false;
-bool rightPumpToggleState = false;
-
-void allRelaysOff();
-void controlRelay(int pin, bool state);
-void alarmMotorOn();
-void alarmMotorOff();
-void startAlarmRhythm();
-void stopAlarmRhythm();
-void updateAlarmRhythm();
-void checkSerialCommands();
-void updateAutoPressure();
-void measureAndSetLeftPressure();
-void measureAndSetRightPressure();
-void leftPumpOn();
-void leftPumpOff();
-void rightPumpOn();
-void rightPumpOff();
-void leftAirPumpOn();
-void leftAirPumpOff();
-void rightAirPumpOn();
-void rightAirPumpOff();
-float readPressure(int pin);
-float getPressurePercent(float pressure_psi, bool isLeft, bool isInitial);
-void sendJsonResponse(String command, String status, String message);
-void printPressureStatus();
+bool alarmActive = false, leftPumpActive = false, rightPumpActive = false;
+bool leftAirActive = false, rightAirActive = false, leftMaintainMode = false, rightMaintainMode = false;
 
 void setup() {
   Serial.begin(9600);
   uartBridge.begin(9600);
-
-  pinMode(13, INPUT); //센서부 신호 
-  pinMode(ALARM_MOTOR, OUTPUT);
-  pinMode(LEFT_PUMP, OUTPUT);
-  pinMode(ALARM_MOTOR_2, OUTPUT);
-  pinMode(RIGHT_PUMP, OUTPUT);
-  pinMode(LEFT_AIR_PUMP, OUTPUT);
-  pinMode(RIGHT_AIR_PUMP, OUTPUT);
+  
+  pinMode(13, INPUT);
+  pinMode(ALARM_MOTOR, OUTPUT); pinMode(LEFT_PUMP, OUTPUT); pinMode(ALARM_MOTOR_2, OUTPUT);
+  pinMode(RIGHT_PUMP, OUTPUT); pinMode(LEFT_AIR_PUMP, OUTPUT); pinMode(RIGHT_AIR_PUMP, OUTPUT);
   
   allRelaysOff();
-  lastPrintTime = millis();
-  leftLastCheckTime = millis();
-  rightLastCheckTime = millis();
-  leftPumpToggleTime = millis();
-  rightPumpToggleTime = millis();
+  unsigned long t = millis();
+  lastPrintTime = leftMaintainTime = rightMaintainTime = t;
+  leftLastOverTime = rightLastOverTime = t;
 }
 
 void loop() {
   updateAlarmRhythm();
   checkSerialCommands();
-  updateAutoPressure();
+  updatePumpControl();
+  checkMaintenance();
 
-  if (uartBridge.available()) {
-    Serial.write(uartBridge.read());
-  }
+  if (uartBridge.available()) Serial.write(uartBridge.read());
   
-  unsigned long currentTime = millis();
-  if (currentTime - lastPrintTime >= 500) {
-    printPressureStatus();
-    lastPrintTime = currentTime;
+  if (millis() - lastPrintTime >= 1000) {
+    printStatus();
+    lastPrintTime = millis();
   }
-  
-  delay(100);
+  delay(50);
 }
 
 void allRelaysOff() {
-  digitalWrite(ALARM_MOTOR, HIGH);
-  digitalWrite(LEFT_PUMP, HIGH);
-  digitalWrite(ALARM_MOTOR_2, HIGH);
-  digitalWrite(RIGHT_PUMP, HIGH);
-  digitalWrite(LEFT_AIR_PUMP, HIGH);
-  digitalWrite(RIGHT_AIR_PUMP, HIGH);
+  digitalWrite(ALARM_MOTOR, HIGH); digitalWrite(LEFT_PUMP, HIGH); digitalWrite(ALARM_MOTOR_2, HIGH);
+  digitalWrite(RIGHT_PUMP, HIGH); digitalWrite(LEFT_AIR_PUMP, HIGH); digitalWrite(RIGHT_AIR_PUMP, HIGH);
 }
 
-void controlRelay(int pin, bool state) {
-  digitalWrite(pin, state ? LOW : HIGH);
-}
-
-void alarmMotorOn() {
-  controlRelay(ALARM_MOTOR, true);
-  controlRelay(ALARM_MOTOR_2, true);
-}
-
-void alarmMotorOff() {
-  controlRelay(ALARM_MOTOR, false);
-  controlRelay(ALARM_MOTOR_2, false);
-}
-
-void startAlarmRhythm() {
-  alarmStartMillis = millis();
-  alarmPatternIndex = 0;
-  alarmActive = true;
-}
-
-void stopAlarmRhythm() {
-  alarmActive = false;
-  digitalWrite(ALARM_MOTOR, HIGH);
-  digitalWrite(ALARM_MOTOR_2, HIGH);
-}
+void controlRelay(int pin, bool state) { digitalWrite(pin, state ? LOW : HIGH); }
 
 void updateAlarmRhythm() {
   if (!alarmActive) return;
   
-  unsigned long currentMillis = millis();
-  unsigned long elapsed = currentMillis - alarmStartMillis;
+  unsigned long elapsed = millis() - alarmStartTime;
+  unsigned long cycleTime = elapsed % 2000;
   
-  if (alarmPatternIndex < patternLength) {
-    unsigned long onStart = rhythmPattern[alarmPatternIndex][0];
-    unsigned long onLength = rhythmPattern[alarmPatternIndex][1];
+  if (alarmIndex < 16) {
+    byte onTime = rhythmPattern[alarmIndex];
+    if (onTime > MAX_MOTOR_ON_TIME) onTime = MAX_MOTOR_ON_TIME;
     
-    if (elapsed >= onStart && elapsed < onStart + onLength) {
-      if (alarmPatternIndex % 2 == 0) {
-        controlRelay(ALARM_MOTOR, true);
-        controlRelay(ALARM_MOTOR_2, false);
+    byte cyclePos = (cycleTime / 125) % 16;
+    
+    if (cyclePos == alarmIndex && cycleTime % 125 < onTime) {
+      if (alarmIndex % 2 == 0) {
+        controlRelay(ALARM_MOTOR, true); controlRelay(ALARM_MOTOR_2, false);
       } else {
-        controlRelay(ALARM_MOTOR, false);
-        controlRelay(ALARM_MOTOR_2, true);
+        controlRelay(ALARM_MOTOR, false); controlRelay(ALARM_MOTOR_2, true);
       }
-    } else if (elapsed >= onStart + onLength) {
-      controlRelay(ALARM_MOTOR, false);
-      controlRelay(ALARM_MOTOR_2, false);
-      alarmPatternIndex++;
+    } else {
+      controlRelay(ALARM_MOTOR, false); controlRelay(ALARM_MOTOR_2, false);
     }
-  } else {
-    stopAlarmRhythm();
+    
+    if (cycleTime < 125) alarmIndex = (alarmIndex + 1) % 16;
   }
 }
 
 void checkSerialCommands() {
   if (Serial.available()) {
-    String command = Serial.readString();
-    command.trim();
+    String cmd = Serial.readString();
+    cmd.trim();
     
-    if (command.startsWith("LEFT_SET:")) {
-      leftTargetPressure = command.substring(9).toFloat();
-      measureAndSetLeftPressure();
+    if (cmd.startsWith("LEFT_SET:")) {
+      leftTargetPressure = cmd.substring(9).toFloat();
+      setLeftPressure();
     }
-    else if (command.startsWith("RIGHT_SET:")) {
-      rightTargetPressure = command.substring(10).toFloat();
-      measureAndSetRightPressure();
+    else if (cmd.startsWith("RIGHT_SET:")) {
+      rightTargetPressure = cmd.substring(10).toFloat();
+      setRightPressure();
     }
-    else if (command == "STOP_LEFT") {
-      leftPumpAuto = false;
-      leftAirPumpAuto = false;
-      leftAutoMaintain = false;
-      leftPumpOff();
-      leftAirPumpOff();
-      sendJsonResponse("STOP_LEFT", "success", "왼쪽 펌프 중지");
+    else if (cmd == "STOP_LEFT") {
+      leftPumpActive = leftAirActive = leftMaintainMode = false;
+      controlRelay(LEFT_PUMP, false); controlRelay(LEFT_AIR_PUMP, false);
+      sendResponse("STOP_LEFT", "OK");
     }
-    else if (command == "STOP_RIGHT") {
-      rightPumpAuto = false;
-      rightAirPumpAuto = false;
-      rightAutoMaintain = false;
-      rightPumpOff();
-      rightAirPumpOff();
-      sendJsonResponse("STOP_RIGHT", "success", "오른쪽 펌프 중지");
+    else if (cmd == "STOP_RIGHT") {
+      rightPumpActive = rightAirActive = rightMaintainMode = false;
+      controlRelay(RIGHT_PUMP, false); controlRelay(RIGHT_AIR_PUMP, false);
+      sendResponse("STOP_RIGHT", "OK");
     }
-    else if (command.startsWith("SET_ALARM:")) {
-      int alarmState = command.substring(10).toInt();
-      if (alarmState == 1) {
-        startAlarmRhythm();
-        sendJsonResponse("SET_ALARM", "success", "알람 시작");
+    else if (cmd.startsWith("SET_ALARM:")) {
+      if (cmd.substring(10).toInt() == 1) {
+        alarmStartTime = millis(); alarmIndex = 0; alarmActive = true;
+        sendResponse("SET_ALARM", "ON");
       } else {
-        stopAlarmRhythm();
-        sendJsonResponse("SET_ALARM", "success", "알람 정지");
+        alarmActive = false; controlRelay(ALARM_MOTOR, false); controlRelay(ALARM_MOTOR_2, false);
+        sendResponse("SET_ALARM", "OFF");
       }
     }
   }
 }
 
-void updateAutoPressure() {
-  unsigned long currentTime = millis();
+void updatePumpControl() {
+  unsigned long t = millis();
   
-  if (leftPumpAuto) {
-    if (currentTime - leftPumpToggleTime >= PUMP_TOGGLE_INTERVAL) {
-      leftPumpToggleState = !leftPumpToggleState;
-      controlRelay(LEFT_PUMP, leftPumpToggleState);
-      leftPumpToggleTime = currentTime;
+  // 왼쪽 펌프 제어 (시간기반 + 센서 즉시정지)
+  if (leftPumpActive) {
+    unsigned long elapsed = t - leftPumpStartTime;
+    float targetTime = (leftTargetPressure - leftCurrentLevel) * 100 / LEFT_PUMP_RATIO;
+    float sensorPressure = getPressurePercent(readPressure(PRESSURE_LEFT), true);
+    
+    // 센서 즉시 정지 체크
+    if (sensorPressure >= leftTargetPressure) {
+      if (t - leftLastOverTime <= 1000) leftOverCount++; else leftOverCount = 1;
+      leftLastOverTime = t;
+      if (leftOverCount >= 2) {
+        leftPumpActive = false; controlRelay(LEFT_PUMP, false);
+        leftCurrentLevel = leftTargetPressure; leftMaintainMode = true; leftMaintainTime = t;
+        leftOverCount = 0;
+        if (DEBUG) { Serial.print("L sensor stop: "); Serial.println(sensorPressure); }
+        return;
+      }
     }
     
-    float leftPressurePercent = getPressurePercent(readPressure(PRESSURE_LEFT), true, false);
-    if (leftPressurePercent >= leftTargetPressure) {
-      leftPumpAuto = false;
-      leftPumpOff();
-      if (DEBUG) {
-        Serial.print("왼쪽 펌프 목표 달성: ");
-        Serial.print(leftPressurePercent);
-        Serial.println("%");
-      }
+    // 시간 도달
+    if (elapsed >= targetTime) {
+      leftPumpActive = false; controlRelay(LEFT_PUMP, false);
+      leftCurrentLevel = leftTargetPressure; leftMaintainMode = true; leftMaintainTime = t;
+      if (DEBUG) { Serial.print("L time done: "); Serial.print(leftCurrentLevel); Serial.print("% sensor:"); Serial.println(sensorPressure); }
     }
   }
   
-  if (rightPumpAuto) {
-    if (currentTime - rightPumpToggleTime >= PUMP_TOGGLE_INTERVAL) {
-      rightPumpToggleState = !rightPumpToggleState;
-      controlRelay(RIGHT_PUMP, rightPumpToggleState);
-      rightPumpToggleTime = currentTime;
+  // 오른쪽 펌프 제어 (시간기반 + 센서 즉시정지)
+  if (rightPumpActive) {
+    unsigned long elapsed = t - rightPumpStartTime;
+    float targetTime = (rightTargetPressure - rightCurrentLevel) * 100 / RIGHT_PUMP_RATIO;
+    float sensorPressure = getPressurePercent(readPressure(PRESSURE_RIGHT), false);
+    
+    // 센서 즉시 정지 체크
+    if (sensorPressure >= rightTargetPressure) {
+      if (t - rightLastOverTime <= 1000) rightOverCount++; else rightOverCount = 1;
+      rightLastOverTime = t;
+      if (rightOverCount >= 2) {
+        rightPumpActive = false; controlRelay(RIGHT_PUMP, false);
+        rightCurrentLevel = rightTargetPressure; rightMaintainMode = true; rightMaintainTime = t;
+        rightOverCount = 0;
+        if (DEBUG) { Serial.print("R sensor stop: "); Serial.println(sensorPressure); }
+        return;
+      }
     }
     
-    float rightPressurePercent = getPressurePercent(readPressure(PRESSURE_RIGHT), false, false);
-    if (rightPressurePercent >= rightTargetPressure) {
-      rightPumpAuto = false;
-      rightPumpOff();
-      if (DEBUG) {
-        Serial.print("오른쪽 펌프 목표 달성: ");
-        Serial.print(rightPressurePercent);
-        Serial.println("%");
-      }
+    // 시간 도달
+    if (elapsed >= targetTime) {
+      rightPumpActive = false; controlRelay(RIGHT_PUMP, false);
+      rightCurrentLevel = rightTargetPressure; rightMaintainMode = true; rightMaintainTime = t;
+      if (DEBUG) { Serial.print("R time done: "); Serial.print(rightCurrentLevel); Serial.print("% sensor:"); Serial.println(sensorPressure); }
     }
   }
   
-  if (leftAirPumpAuto) {
-    if (currentTime - leftAirPumpStartTime >= leftAirPumpDuration) {
-      leftAirPumpAuto = false;
-      leftAirPumpOff();
-      if (DEBUG) Serial.println("왼쪽 방출펌프 완료");
+  // 방출 펌프 제어 (시간기반)
+  if (leftAirActive) {
+    unsigned long elapsed = t - leftAirStartTime;
+    float pressureDiff = leftCurrentLevel - leftTargetPressure;
+    unsigned long targetTime = pressureDiff * LEFT_AIR_TIME;
+    
+    if (elapsed >= targetTime) {
+      leftAirActive = false; controlRelay(LEFT_AIR_PUMP, false);
+      leftCurrentLevel = leftTargetPressure; leftMaintainMode = true; leftMaintainTime = t;
+      if (DEBUG) { Serial.print("L air done: "); Serial.println(leftCurrentLevel); }
     }
   }
   
-  if (rightAirPumpAuto) {
-    if (currentTime - rightAirPumpStartTime >= rightAirPumpDuration) {
-      rightAirPumpAuto = false;
-      rightAirPumpOff();
-      if (DEBUG) Serial.println("오른쪽 방출펌프 완료");
+  if (rightAirActive) {
+    unsigned long elapsed = t - rightAirStartTime;
+    float pressureDiff = rightCurrentLevel - rightTargetPressure;
+    unsigned long targetTime = pressureDiff * RIGHT_AIR_TIME;
+    
+    if (elapsed >= targetTime) {
+      rightAirActive = false; controlRelay(RIGHT_AIR_PUMP, false);
+      rightCurrentLevel = rightTargetPressure; rightMaintainMode = true; rightMaintainTime = t;
+      if (DEBUG) { Serial.print("R air done: "); Serial.println(rightCurrentLevel); }
     }
-  }
-  
-  if (leftAutoMaintain && currentTime - leftLastCheckTime >= 600000) {
-    float leftPressurePercent = getPressurePercent(readPressure(PRESSURE_LEFT), true, false);
-    if (leftPressurePercent < leftTargetPressure) {
-      if (DEBUG) {
-        Serial.print("왼쪽 압력 하락 감지: ");
-        Serial.print(leftPressurePercent);
-        Serial.println("% - 점진적 보충 시작");
-      }
-      leftPumpAuto = true;
-      leftPumpToggleTime = currentTime;
-    }
-    leftLastCheckTime = currentTime;
-  }
-  
-  if (rightAutoMaintain && currentTime - rightLastCheckTime >= 600000) {
-    float rightPressurePercent = getPressurePercent(readPressure(PRESSURE_RIGHT), false, false);
-    if (rightPressurePercent < rightTargetPressure) {
-      if (DEBUG) {
-        Serial.print("오른쪽 압력 하락 감지: ");
-        Serial.print(rightPressurePercent);
-        Serial.println("% - 점진적 보충 시작");
-      }
-      rightPumpAuto = true;
-      rightPumpToggleTime = currentTime;
-    }
-    rightLastCheckTime = currentTime;
   }
 }
 
-void measureAndSetLeftPressure() {
-  if (DEBUG) {
-    Serial.print("왼쪽 목표: ");
-    Serial.print(leftTargetPressure);
-    Serial.println("% - 고정 790ms 펌프+측정 시작 (최초측정모드)");
+void checkMaintenance() {
+  unsigned long t = millis();
+  
+  if (leftMaintainMode && t - leftMaintainTime >= MAINTAIN_INTERVAL && leftCurrentLevel >= MIN_MAINTAIN_LEVEL) {
+    leftTargetPressure = leftCurrentLevel + MAINTAIN_BOOST;
+    if (leftTargetPressure > 100) leftTargetPressure = 100;
+    leftPumpActive = true; leftPumpStartTime = t; controlRelay(LEFT_PUMP, true);
+    leftMaintainTime = t;
+    if (DEBUG) { Serial.print("L maintain: "); Serial.print(leftCurrentLevel); Serial.print("->"); Serial.println(leftTargetPressure); }
   }
   
-  leftPumpAuto = false;
-  leftAirPumpAuto = false;
-  leftAutoMaintain = false;
-  leftPumpOff();
-  leftAirPumpOff();
-  
-  float maxPressure = 0;
-  unsigned long startTime = millis();
-  
-  leftPumpOn();
-  
-  while (millis() - startTime < MEASUREMENT_DURATION) {
-    float currentPressure = getPressurePercent(readPressure(PRESSURE_LEFT), true, true);
-    if (currentPressure > maxPressure) {
-      maxPressure = currentPressure;
-    }
-    delay(10);
+  if (rightMaintainMode && t - rightMaintainTime >= MAINTAIN_INTERVAL && rightCurrentLevel >= MIN_MAINTAIN_LEVEL) {
+    rightTargetPressure = rightCurrentLevel + MAINTAIN_BOOST;
+    if (rightTargetPressure > 100) rightTargetPressure = 100;
+    rightPumpActive = true; rightPumpStartTime = t; controlRelay(RIGHT_PUMP, true);
+    rightMaintainTime = t;
+    if (DEBUG) { Serial.print("R maintain: "); Serial.print(rightCurrentLevel); Serial.print("->"); Serial.println(rightTargetPressure); }
   }
+}
+void setLeftPressure() {
+  leftPumpActive = leftAirActive = false;
+  controlRelay(LEFT_PUMP, false); controlRelay(LEFT_AIR_PUMP, false);
+  leftOverCount = 0;
   
-  leftPumpOff();
-  if (DEBUG) {
-    Serial.print("측정된 최대 압력 (최초기준): ");
-    Serial.print(maxPressure);
-    Serial.println("%");
-  }
-  
-  leftAutoMaintain = true;
-  leftLastCheckTime = millis();
-  
-  if (maxPressure < leftTargetPressure) {
-    leftPumpAuto = true;
-    leftPumpToggleTime = millis();
-    if (DEBUG) Serial.println("목표 미달 - 점진적 펌프 동작 (연속기준)");
-    sendJsonResponse("LEFT_SET", "success", "목표 미달 - 점진적 펌프 동작");
+  // 센서 안보고 내부 레벨값만 사용
+  if (leftCurrentLevel < leftTargetPressure) {
+    leftPumpActive = true; leftPumpStartTime = millis(); controlRelay(LEFT_PUMP, true);
+    sendResponse("LEFT_SET", "PUMP");
+    if (DEBUG) { Serial.print("L pump: "); Serial.print(leftCurrentLevel); Serial.print("->"); Serial.println(leftTargetPressure); }
+  } else if (leftCurrentLevel > leftTargetPressure) {
+    leftAirActive = true; leftAirStartTime = millis(); controlRelay(LEFT_AIR_PUMP, true);
+    sendResponse("LEFT_SET", "AIR");
+    if (DEBUG) { Serial.print("L air: "); Serial.print(leftCurrentLevel); Serial.print("->"); Serial.println(leftTargetPressure); }
   } else {
-    float excessPercent = maxPressure - leftTargetPressure;
-    leftAirPumpDuration = (unsigned long)(excessPercent * 30000);
-    leftAirPumpStartTime = millis();
-    leftAirPumpAuto = true;
-    leftAirPumpOn();
-    if (DEBUG) {
-      Serial.print("목표 초과 - 방출펌프 ");
-      Serial.print(excessPercent);
-      Serial.print("% 초과분 (");
-      Serial.print(leftAirPumpDuration/1000);
-      Serial.println("초) 동작");
-    }
-    sendJsonResponse("LEFT_SET", "success", "목표 초과 - 방출펌프 동작");
+    leftMaintainMode = true; leftMaintainTime = millis();
+    sendResponse("LEFT_SET", "SAME");
   }
 }
 
-void measureAndSetRightPressure() {
-  if (DEBUG) {
-    Serial.print("오른쪽 목표: ");
-    Serial.print(rightTargetPressure);
-    Serial.println("% - 고정 790ms 펌프+측정 시작 (최초측정모드)");
-  }
+void setRightPressure() {
+  rightPumpActive = rightAirActive = false;
+  controlRelay(RIGHT_PUMP, false); controlRelay(RIGHT_AIR_PUMP, false);
+  rightOverCount = 0;
   
-  rightPumpAuto = false;
-  rightAirPumpAuto = false;
-  rightAutoMaintain = false;
-  rightPumpOff();
-  rightAirPumpOff();
-  
-  float maxPressure = 0;
-  unsigned long startTime = millis();
-  
-  rightPumpOn();
-  
-  while (millis() - startTime < MEASUREMENT_DURATION) {
-    float currentPressure = getPressurePercent(readPressure(PRESSURE_RIGHT), false, true);
-    if (currentPressure > maxPressure) {
-      maxPressure = currentPressure;
-    }
-    delay(10);
-  }
-  
-  rightPumpOff();
-  if (DEBUG) {
-    Serial.print("측정된 최대 압력 (최초기준): ");
-    Serial.print(maxPressure);
-    Serial.println("%");
-  }
-  
-  rightAutoMaintain = true;
-  rightLastCheckTime = millis();
-  
-  if (maxPressure < rightTargetPressure) {
-    rightPumpAuto = true;
-    rightPumpToggleTime = millis();
-    if (DEBUG) Serial.println("목표 미달 - 점진적 펌프 동작 (연속기준)");
-    sendJsonResponse("RIGHT_SET", "success", "목표 미달 - 점진적 펌프 동작");
+  // 센서 안보고 내부 레벨값만 사용
+  if (rightCurrentLevel < rightTargetPressure) {
+    rightPumpActive = true; rightPumpStartTime = millis(); controlRelay(RIGHT_PUMP, true);
+    sendResponse("RIGHT_SET", "PUMP");
+    if (DEBUG) { Serial.print("R pump: "); Serial.print(rightCurrentLevel); Serial.print("->"); Serial.println(rightTargetPressure); }
+  } else if (rightCurrentLevel > rightTargetPressure) {
+    rightAirActive = true; rightAirStartTime = millis(); controlRelay(RIGHT_AIR_PUMP, true);
+    sendResponse("RIGHT_SET", "AIR");
+    if (DEBUG) { Serial.print("R air: "); Serial.print(rightCurrentLevel); Serial.print("->"); Serial.println(rightTargetPressure); }
   } else {
-    float excessPercent = maxPressure - rightTargetPressure;
-    rightAirPumpDuration = (unsigned long)(excessPercent * 30000);
-    rightAirPumpStartTime = millis();
-    rightAirPumpAuto = true;
-    rightAirPumpOn();
-    if (DEBUG) {
-      Serial.print("목표 초과 - 방출펌프 ");
-      Serial.print(excessPercent);
-      Serial.print("% 초과분 (");
-      Serial.print(rightAirPumpDuration/1000);
-      Serial.println("초) 동작");
-    }
-    sendJsonResponse("RIGHT_SET", "success", "목표 초과 - 방출펌프 동작");
+    rightMaintainMode = true; rightMaintainTime = millis();
+    sendResponse("RIGHT_SET", "SAME");
   }
-}
-
-void leftPumpOn() {
-  controlRelay(LEFT_PUMP, true);
-}
-
-void leftPumpOff() {
-  controlRelay(LEFT_PUMP, false);
-}
-
-void rightPumpOn() {
-  controlRelay(RIGHT_PUMP, true);
-}
-
-void rightPumpOff() {
-  controlRelay(RIGHT_PUMP, false);
-}
-
-void leftAirPumpOn() {
-  controlRelay(LEFT_AIR_PUMP, true);
-}
-
-void leftAirPumpOff() {
-  controlRelay(LEFT_AIR_PUMP, false);
-}
-
-void rightAirPumpOn() {
-  controlRelay(RIGHT_AIR_PUMP, true);
-}
-
-void rightAirPumpOff() {
-  controlRelay(RIGHT_AIR_PUMP, false);
 }
 
 float readPressure(int pin) {
-  int rawValue = analogRead(pin);
-  float voltage = rawValue * (5.0 / 1023.0);
-  float pressure_psi = (voltage - 0.5) * (200.0 / 4.0);
-  
-  if(pressure_psi < 0) pressure_psi = 0;
-  
-  return pressure_psi;
+  int raw = analogRead(pin);
+  float voltage = raw * (5.0 / 1023.0);
+  float psi = (voltage - 0.5) * (200.0 / 4.0);
+  return psi < 0 ? 0 : psi;
 }
 
-float getPressurePercent(float pressure_psi, bool isLeft, bool isInitial) {
-  if (isLeft) {
-    if (isInitial) {
-      return (pressure_psi / MAX_PRESSURE_PSI_L_INITIAL) * 100.0;
-    } else {
-      return (pressure_psi / MAX_PRESSURE_PSI_L_CONTINUOUS) * 100.0;
-    }
-  } else {
-    if (isInitial) {
-      return (pressure_psi / MAX_PRESSURE_PSI_R_INITIAL) * 100.0;
-    } else {
-      return (pressure_psi / MAX_PRESSURE_PSI_R_CONTINUOUS) * 100.0;
-    }
-  }
+float getPressurePercent(float psi, bool isLeft) {
+  float maxPsi = isLeft ? MAX_PRESSURE_PSI_L_CONTINUOUS : MAX_PRESSURE_PSI_R_CONTINUOUS;
+  if (maxPsi <= 0) return 0;
+  float percent = (psi / maxPsi) * 100.0;
+  return percent > 100 ? 100 : (percent < 0 ? 0 : percent);
 }
 
-void sendJsonResponse(String command, String status, String message) {
-  float leftPressure = readPressure(PRESSURE_LEFT);
-  float rightPressure = readPressure(PRESSURE_RIGHT);
-  
-  Serial.print("{");
-  Serial.print("\"command\":\"" + command + "\",");
-  Serial.print("\"status\":\"" + status + "\",");
-  Serial.print("\"message\":\"" + message + "\",");
-  Serial.print("\"left_pressure\":" + String(leftPressure) + ",");
-  Serial.print("\"left_percent_initial\":" + String(getPressurePercent(leftPressure, true, true)) + ",");
-  Serial.print("\"left_percent_continuous\":" + String(getPressurePercent(leftPressure, true, false)) + ",");
-  Serial.print("\"right_pressure\":" + String(rightPressure) + ",");
-  Serial.print("\"right_percent_initial\":" + String(getPressurePercent(rightPressure, false, true)) + ",");
-  Serial.print("\"right_percent_continuous\":" + String(getPressurePercent(rightPressure, false, false)) + ",");
-  Serial.print("\"timestamp\":" + String(millis()));
+void sendResponse(String cmd, String msg) {
+  float lp = readPressure(PRESSURE_LEFT), rp = readPressure(PRESSURE_RIGHT);
+  Serial.print("{\"cmd\":\""); Serial.print(cmd);
+  Serial.print("\",\"msg\":\""); Serial.print(msg);
+  Serial.print("\",\"L\":"); Serial.print(lp);
+  Serial.print(",\"R\":"); Serial.print(rp);
+  Serial.print(",\"t\":"); Serial.print(millis());
   Serial.println("}");
 }
 
-void printPressureStatus() {
+void printStatus() {
   if (DEBUG) {
-    float leftPressure = readPressure(PRESSURE_LEFT);
-    float rightPressure = readPressure(PRESSURE_RIGHT);
-    
-    Serial.print("왼쪽 압력: ");
-    Serial.print(leftPressure);
-    Serial.print(" PSI (최초:");
-    Serial.print(getPressurePercent(leftPressure, true, true));
-    Serial.print("%, 연속:");
-    Serial.print(getPressurePercent(leftPressure, true, false));
-    Serial.print("%) | 오른쪽 압력: ");
-    Serial.print(rightPressure);
-    Serial.print(" PSI (최초:");
-    Serial.print(getPressurePercent(rightPressure, false, true));
-    Serial.print("%, 연속:");
-    Serial.print(getPressurePercent(rightPressure, false, false));
-    Serial.println("%)");
+    float lp = readPressure(PRESSURE_LEFT), rp = readPressure(PRESSURE_RIGHT);
+    Serial.print("L:"); Serial.print(leftCurrentLevel); Serial.print("%("); Serial.print(getPressurePercent(lp, true)); Serial.print(")");
+    Serial.print(" R:"); Serial.print(rightCurrentLevel); Serial.print("%("); Serial.print(getPressurePercent(rp, false)); Serial.println(")");
   }
 }
