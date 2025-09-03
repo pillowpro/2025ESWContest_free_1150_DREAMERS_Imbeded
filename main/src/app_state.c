@@ -18,6 +18,11 @@ void app_state_set_auth_token(const char* token)
     strncpy(g_app_state.auth_token, token, sizeof(g_app_state.auth_token) - 1);
 }
 
+void app_state_set_device_token(const char* token)
+{
+    strncpy(g_app_state.device_token, token, sizeof(g_app_state.device_token) - 1);
+}
+
 void app_state_set_home_mode(bool active)
 {
     g_app_state.home_mode_active = active;

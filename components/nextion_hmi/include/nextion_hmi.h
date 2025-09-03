@@ -62,6 +62,9 @@ esp_err_t nextion_show_home_data(const char* temperature, const char* weather, c
 esp_err_t nextion_show_fota_status(const char* status);
 esp_err_t nextion_clear_fota_status(void);
 
+// Page 1 - Home Mode with heartbeat data
+esp_err_t nextion_show_heartbeat_data_detailed(const char* current_time_kr, const char* alarm_time_display, float temperature, float humidity);
+
 #ifdef __cplusplus
 }
 #endif

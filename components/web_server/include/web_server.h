@@ -12,6 +12,7 @@ typedef struct {
     char ssid[33];
     char password[65];
     char token[256];
+    char provisioning_code[16];
 } wifi_credentials_t;
 
 typedef void (*wifi_config_callback_t)(const wifi_credentials_t* credentials);

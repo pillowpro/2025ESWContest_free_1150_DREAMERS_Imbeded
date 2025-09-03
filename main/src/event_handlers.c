@@ -58,6 +58,55 @@ void nextion_event_handler(nextion_event_t* event)
     }
 }
 
+static esp_err_t provision_device_new_api(const char* provisioning_code, const char* temp_token)
+{
+    provisioning_request_t request = {0};
+    provisioning_response_t response = {0};
+    api_response_t api_response = {0};
+    
+    char device_id[64];
+    char mac_str[32];
+    uint8_t mac[6];
+    
+    utils_get_mac_based_device_id(device_id, sizeof(device_id));
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X", 
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    strncpy(request.provisioning_code, provisioning_code, sizeof(request.provisioning_code) - 1);
+    strncpy(request.device_id, device_id, sizeof(request.device_id) - 1);
+    strncpy(request.device_type, "pillow", sizeof(request.device_type) - 1);
+    strncpy(request.firmware_version, "1.2.3", sizeof(request.firmware_version) - 1);
+    strncpy(request.mac_address, mac_str, sizeof(request.mac_address) - 1);
+    
+    nextion_show_setup_status("Provisioning Device...");
+    
+    esp_err_t ret = api_client_provision_device(&request, &response, &api_response);
+    if (ret == ESP_OK && api_response.success) {
+        ESP_LOGI(TAG, "Device provisioned successfully, received token");
+        nextion_show_setup_status("Provisioning Complete");
+        device_config_set_provisioned(true);
+        
+        // Save device token instead of temp token
+        device_config_save_device_token(response.device_token);
+        
+        app_state_set_device_id(device_id);
+        app_state_set_device_token(response.device_token);
+        
+        vTaskDelay(pdMS_TO_TICKS(STATUS_DELAY_MS));
+        
+        // Change to page 1 after successful provisioning
+        nextion_change_page(1);
+        app_state_set_home_mode(true);
+        
+    } else {
+        ESP_LOGE(TAG, "Device provisioning failed: %s", api_response.message);
+        nextion_show_setup_status("Provisioning Failed");
+    }
+    
+    return ret;
+}
+
 static esp_err_t register_device_if_needed(const char* device_id, const char* token)
 {
     api_response_t response;
@@ -85,14 +134,15 @@ static esp_err_t register_device_if_needed(const char* device_id, const char* to
 
 static void handle_provisioning_success(void)
 {
-    ESP_LOGI(TAG, "Provisioning success, registering device");
-    char device_id[16];
-    char token[256];
+    ESP_LOGI(TAG, "Provisioning success - WiFi connected, now provisioning device");
     
-    device_config_get_device_id(device_id);
-    device_config_get_auth_token(token);
+    char provisioning_code[16];
+    char temp_token[256];
     
-    register_device_if_needed(device_id, token);
+    device_config_get_provisioning_code(provisioning_code);
+    device_config_get_auth_token(temp_token);
+    
+    provision_device_new_api(provisioning_code, temp_token);
     
     wifi_manager_stop_provisioning();
     web_server_stop();
@@ -126,6 +176,16 @@ void wifi_event_handler(wifi_manager_event_t event, void* data)
             handle_wifi_connected();
             break;
             
+        case WIFI_MGR_EVENT_STA_DISCONNECTED:
+            ESP_LOGE(TAG, "WiFi disconnected");
+            if (device_config_is_provisioned()) {
+                nextion_show_setup_status("WiFi Disconnected - Reconnecting...");
+            } else {
+                nextion_show_setup_status("WiFi Disconnected");
+            }
+            app_state_set_home_mode(false);
+            break;
+            
         case WIFI_MGR_EVENT_PROVISIONING_SUCCESS:
             handle_provisioning_success();
             break;
@@ -134,6 +194,16 @@ void wifi_event_handler(wifi_manager_event_t event, void* data)
             ESP_LOGE(TAG, "Provisioning failed");
             nextion_show_setup_status("WiFi Connection Failed");
             app_state_set_home_mode(false);
+            break;
+            
+        case WIFI_MGR_EVENT_CONNECTION_MAX_RETRIES_FAILED:
+            ESP_LOGE(TAG, "WiFi connection failed after maximum retries - performing factory reset");
+            nextion_show_setup_status("Connection Failed - Resetting...");
+            vTaskDelay(pdMS_TO_TICKS(2000)); // Show message for 2 seconds
+            
+            // Factory reset and restart to provisioning mode
+            device_config_factory_reset();
+            esp_restart();
             break;
             
         default:
@@ -151,6 +221,7 @@ static esp_err_t validate_and_save_wifi_config(const wifi_credentials_t* credent
     
     device_config_save_wifi_credentials(credentials->ssid, credentials->password);
     device_config_save_auth_token(credentials->token);
+    device_config_save_provisioning_code(credentials->provisioning_code);
     return ESP_OK;
 }
 

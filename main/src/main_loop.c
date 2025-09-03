@@ -1,6 +1,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "main_loop.h"
 #include "wifi_manager.h"
 #include "device_cfg.h"
@@ -8,17 +10,50 @@
 #include "app_state.h"
 #include "home_display.h"
 #include "fota_manager.h"
+#include "nextion_hmi.h"
 
 static const char *TAG = "MAIN_LOOP";
 
 static void send_heartbeat_if_needed(const char* device_id)
 {
-    char token[256];
-    device_config_get_auth_token(token);
+    char device_token[512];
+    device_config_get_device_token(device_token);
     
-    api_response_t response;
-    if (api_client_send_heartbeat(device_id, token, &response) != ESP_OK) {
-        ESP_LOGW(TAG, "Heartbeat failed");
+    if (strlen(device_token) == 0) {
+        ESP_LOGW(TAG, "No device token available for heartbeat");
+        return;
+    }
+    
+    // Prepare heartbeat data with dummy values as requested
+    heartbeat_data_t heartbeat_data = {0};
+    heartbeat_data.uptime = esp_timer_get_time() / 1000000; // seconds
+    heartbeat_data.free_memory = esp_get_free_heap_size();
+    heartbeat_data.wifi_rssi = -45; // dummy value
+    heartbeat_data.battery_level = 85; // dummy value
+    heartbeat_data.pump_angle = 3; // dummy value
+    heartbeat_data.room_temp = 24.2f; // dummy value
+    heartbeat_data.room_humidity = 58.0f; // dummy value
+    strcpy(heartbeat_data.last_pump_action, "2025-08-29T03:25:12+09:00"); // dummy value
+    
+    heartbeat_response_t response;
+    api_response_t api_response;
+    
+    esp_err_t ret = api_client_send_heartbeat_v2(device_id, device_token, &heartbeat_data, &response, &api_response);
+    
+    if (ret == ESP_OK && api_response.success) {
+        ESP_LOGI(TAG, "Heartbeat sent successfully");
+        
+        // Update display with response data using detailed formatting
+        nextion_show_heartbeat_data_detailed(
+            response.current_time_kr,
+            response.alarm_info.alarm_time_display,
+            heartbeat_data.room_temp,
+            heartbeat_data.room_humidity
+        );
+        
+        ESP_LOGI(TAG, "Display updated with heartbeat response");
+    } else {
+        ESP_LOGW(TAG, "Heartbeat failed: %s", api_response.message);
     }
 }
 
@@ -76,7 +111,8 @@ void main_loop_run(const char* device_id)
     while (1) {
         if (wifi_manager_is_connected() && 
             device_config_is_provisioned() && 
-            g_app_state.home_mode_active) {
+            g_app_state.home_mode_active &&
+            strlen(g_app_state.device_token) > 0) {
             
             send_heartbeat_if_needed(device_id);
             handle_periodic_updates(device_id);

@@ -15,7 +15,8 @@ typedef enum {
     WIFI_MGR_EVENT_STA_CONNECTED,
     WIFI_MGR_EVENT_STA_DISCONNECTED,
     WIFI_MGR_EVENT_PROVISIONING_SUCCESS,
-    WIFI_MGR_EVENT_PROVISIONING_FAILED
+    WIFI_MGR_EVENT_PROVISIONING_FAILED,
+    WIFI_MGR_EVENT_CONNECTION_MAX_RETRIES_FAILED
 } wifi_manager_event_t;
 
 typedef void (*wifi_event_callback_t)(wifi_manager_event_t event, void* data);

@@ -203,3 +203,71 @@ esp_err_t device_config_factory_reset(void)
     
     return ret;
 }
+
+esp_err_t device_config_save_provisioning_code(const char* code)
+{
+    if (!g_initialized || !code) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    strncpy(g_device_config.provisioning_code, code, sizeof(g_device_config.provisioning_code) - 1);
+    g_device_config.provisioning_code[sizeof(g_device_config.provisioning_code) - 1] = '\0';
+    
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
+    ret = nvs_set_blob(nvs_handle, "config", &g_device_config, sizeof(device_config_t));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(nvs_handle);
+    }
+    
+    nvs_close(nvs_handle);
+    return ret;
+}
+
+esp_err_t device_config_get_provisioning_code(char* code)
+{
+    if (!g_initialized || !code) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    strcpy(code, g_device_config.provisioning_code);
+    return ESP_OK;
+}
+
+esp_err_t device_config_save_device_token(const char* token)
+{
+    if (!g_initialized || !token) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    strncpy(g_device_config.device_token, token, sizeof(g_device_config.device_token) - 1);
+    g_device_config.device_token[sizeof(g_device_config.device_token) - 1] = '\0';
+    
+    nvs_handle_t nvs_handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
+    ret = nvs_set_blob(nvs_handle, "config", &g_device_config, sizeof(device_config_t));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(nvs_handle);
+    }
+    
+    nvs_close(nvs_handle);
+    return ret;
+}
+
+esp_err_t device_config_get_device_token(char* token)
+{
+    if (!g_initialized || !token) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    strcpy(token, g_device_config.device_token);
+    return ESP_OK;
+}

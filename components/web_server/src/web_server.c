@@ -45,11 +45,15 @@ static const char* provisioning_html =
 "<label for='token'>Authorization Token:</label>"
 "<input type='text' id='token' placeholder='Enter Auth Token' required>"
 "</div>"
+"<div class='form-group'>"
+"<label for='provisioning_code'>Provisioning Code:</label>"
+"<input type='text' id='provisioning_code' placeholder='Enter Provisioning Code (e.g., A1B2C3D4)' required>"
+"</div>"
 "<button onclick='submitConfig()'>Connect</button>"
 "<div id='status' class='status' style='display:none'></div>"
 "</div>"
 "<script>"
-"function submitConfig(){const ssid=document.getElementById('ssid').value;const password=document.getElementById('password').value;const token=document.getElementById('token').value;if(!ssid||!token){showStatus('Please fill in SSID and Token','error');return;}showStatus('Connecting...','');const btn=document.querySelector('button');btn.disabled=true;btn.textContent='Connecting...';fetch('/api/wifi-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:ssid,password:password,token:token})}).then(response=>response.json()).then(data=>{if(data.success){showStatus('Configuration saved! Device is connecting to WiFi...','success');setTimeout(()=>{window.location.reload();},3000);}else{showStatus('Error: '+data.message,'error');btn.disabled=false;btn.textContent='Connect';}}).catch(error=>{showStatus('Connection failed: '+error.message,'error');btn.disabled=false;btn.textContent='Connect';});}"
+"function submitConfig(){const ssid=document.getElementById('ssid').value;const password=document.getElementById('password').value;const token=document.getElementById('token').value;const provisioning_code=document.getElementById('provisioning_code').value;if(!ssid||!token||!provisioning_code){showStatus('Please fill in SSID, Token and Provisioning Code','error');return;}showStatus('Connecting...','');const btn=document.querySelector('button');btn.disabled=true;btn.textContent='Connecting...';fetch('/api/wifi-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:ssid,password:password,token:token,provisioning_code:provisioning_code})}).then(response=>response.json()).then(data=>{if(data.success){showStatus('Configuration saved! Device is connecting to WiFi...','success');setTimeout(()=>{window.location.reload();},3000);}else{showStatus('Error: '+data.message,'error');btn.disabled=false;btn.textContent='Connect';}}).catch(error=>{showStatus('Connection failed: '+error.message,'error');btn.disabled=false;btn.textContent='Connect';});}"
 "function showStatus(message,type){const status=document.getElementById('status');status.textContent=message;status.className='status '+(type||'');status.style.display='block';}"
 "</script></div></body></html>";
 
@@ -93,10 +97,11 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         cJSON *ssid_json = cJSON_GetObjectItem(json, "ssid");
         cJSON *password_json = cJSON_GetObjectItem(json, "password");
         cJSON *token_json = cJSON_GetObjectItem(json, "token");
+        cJSON *provisioning_code_json = cJSON_GetObjectItem(json, "provisioning_code");
         
-        if (!cJSON_IsString(ssid_json) || !cJSON_IsString(token_json)) {
+        if (!cJSON_IsString(ssid_json) || !cJSON_IsString(token_json) || !cJSON_IsString(provisioning_code_json)) {
             cJSON *success = cJSON_CreateBool(false);
-            cJSON *message = cJSON_CreateString("Missing required fields: ssid, token");
+            cJSON *message = cJSON_CreateString("Missing required fields: ssid, token, provisioning_code");
             cJSON_AddItemToObject(response_json, "success", success);
             cJSON_AddItemToObject(response_json, "message", message);
         } else {
@@ -105,6 +110,7 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
                 strncpy(credentials.password, password_json->valuestring, sizeof(credentials.password) - 1);
             }
             strncpy(credentials.token, token_json->valuestring, sizeof(credentials.token) - 1);
+            strncpy(credentials.provisioning_code, provisioning_code_json->valuestring, sizeof(credentials.provisioning_code) - 1);
             
             ESP_LOGI(TAG, "Received WiFi config - SSID: %s", credentials.ssid);
             

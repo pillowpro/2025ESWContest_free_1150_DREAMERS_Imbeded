@@ -28,11 +28,12 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         if (s_retry_num < MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGI(TAG, "retry to connect to the AP");
+            ESP_LOGI(TAG, "retry to connect to the AP (%d/%d)", s_retry_num, MAXIMUM_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            ESP_LOGE(TAG, "WiFi connection failed after %d retries", MAXIMUM_RETRY);
             if (s_event_callback) {
-                s_event_callback(WIFI_MGR_EVENT_STA_DISCONNECTED, NULL);
+                s_event_callback(WIFI_MGR_EVENT_CONNECTION_MAX_RETRIES_FAILED, NULL);
             }
         }
         ESP_LOGI(TAG,"connect to the AP fail");

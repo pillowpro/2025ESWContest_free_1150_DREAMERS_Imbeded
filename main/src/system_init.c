@@ -92,6 +92,7 @@ void normal_mode_start(void)
     nextion_show_setup_status("Connecting to WiFi...");
     
     device_config_get_auth_token(g_app_state.auth_token);
+    device_config_get_device_token(g_app_state.device_token);
     
     char ssid[33], password[65];
     device_config_get_wifi_credentials(ssid, password);

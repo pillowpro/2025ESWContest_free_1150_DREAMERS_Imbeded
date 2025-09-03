@@ -41,7 +41,8 @@ WiFi 연결 정보와 인증 토큰을 설정합니다.
 {
   "ssid": "MyWiFiNetwork",
   "password": "wifi_password",
-  "token": "auth_token_from_backend"
+  "token": "auth_token_from_backend",
+  "provisioning_code": "A1B2C3D4"
 }
 ```
 
@@ -49,6 +50,7 @@ WiFi 연결 정보와 인증 토큰을 설정합니다.
 - `ssid` (string, required): WiFi 네트워크 이름
 - `password` (string, optional): WiFi 비밀번호 (오픈 네트워크인 경우 생략 가능)
 - `token` (string, required): 백엔드에서 발급된 인증 토큰
+- `provisioning_code` (string, required): 기기 프로비저닝을 위한 코드
 
 **Response:**
 ```json
@@ -62,7 +64,7 @@ WiFi 연결 정보와 인증 토큰을 설정합니다.
 ```json
 {
   "success": false,
-  "message": "Missing required fields: ssid, token"
+  "message": "Missing required fields: ssid, token, provisioning_code"
 }
 ```
 
@@ -198,7 +200,8 @@ async function configureWiFi() {
         body: JSON.stringify({
             ssid: 'MyWiFiNetwork',
             password: 'mypassword',
-            token: 'auth_token_here'
+            token: 'auth_token_here',
+            provisioning_code: 'A1B2C3D4'
         })
     });
     
@@ -229,7 +232,7 @@ async function resetDevice() {
 # WiFi 설정
 curl -X POST http://192.168.4.1/api/wifi-config \
   -H "Content-Type: application/json" \
-  -d '{"ssid":"MyWiFiNetwork","password":"mypassword","token":"auth_token_here"}'
+  -d '{"ssid":"MyWiFiNetwork","password":"mypassword","token":"auth_token_here","provisioning_code":"A1B2C3D4"}'
 
 # 기기 상태 확인
 curl http://192.168.4.1/api/status

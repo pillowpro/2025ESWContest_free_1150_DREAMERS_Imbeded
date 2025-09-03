@@ -55,6 +55,246 @@ esp_err_t api_client_init(void)
     return ESP_OK;
 }
 
+esp_err_t api_client_provision_device(const provisioning_request_t* request, provisioning_response_t* response, api_response_t* api_response)
+{
+    if (!request || !response || !api_response) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    memset(response, 0, sizeof(provisioning_response_t));
+    memset(api_response, 0, sizeof(api_response_t));
+    memset(response_buffer, 0, sizeof(response_buffer));
+    
+    char url[256];
+    snprintf(url, sizeof(url), "%s/devices/provision", API_BASE_URL);
+    
+    cJSON *json = cJSON_CreateObject();
+    cJSON *provisioning_code = cJSON_CreateString(request->provisioning_code);
+    cJSON *device_id = cJSON_CreateString(request->device_id);
+    
+    cJSON_AddItemToObject(json, "provisioning_code", provisioning_code);
+    cJSON_AddItemToObject(json, "device_id", device_id);
+    
+    char *json_string = cJSON_Print(json);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .event_handler = _http_event_handler,
+        .user_data = response_buffer,
+        .timeout_ms = 10000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, json_string, strlen(json_string));
+    
+    esp_err_t err = esp_http_client_perform(client);
+    
+    if (err == ESP_OK) {
+        int status_code = esp_http_client_get_status_code(client);
+        api_response->status_code = status_code;
+        
+        if (status_code == 200) {
+            cJSON *response_json = cJSON_Parse(response_buffer);
+            if (response_json) {
+                cJSON *success = cJSON_GetObjectItem(response_json, "success");
+                if (success && cJSON_IsTrue(success)) {
+                    cJSON *data = cJSON_GetObjectItem(response_json, "data");
+                    if (data) {
+                        cJSON *token = cJSON_GetObjectItem(data, "device_token");
+                        if (token && cJSON_IsString(token)) {
+                            strncpy(response->device_token, token->valuestring, sizeof(response->device_token) - 1);
+                        }
+                        
+                        cJSON *expires = cJSON_GetObjectItem(data, "expires_in");
+                        if (expires && cJSON_IsNumber(expires)) {
+                            response->expires_in = expires->valueint;
+                        }
+                    }
+                    api_response->success = true;
+                    strncpy(api_response->message, "Device provisioned successfully", sizeof(api_response->message) - 1);
+                } else {
+                    api_response->success = false;
+                    strncpy(api_response->message, "Provisioning failed", sizeof(api_response->message) - 1);
+                }
+                cJSON_Delete(response_json);
+            }
+        } else {
+            api_response->success = false;
+            snprintf(api_response->message, sizeof(api_response->message), "HTTP error: %d", status_code);
+        }
+        
+        ESP_LOGI(TAG, "Provisioning response: %d", status_code);
+    } else {
+        api_response->success = false;
+        snprintf(api_response->message, sizeof(api_response->message), "HTTP request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Provisioning request failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    free(json_string);
+    cJSON_Delete(json);
+    
+    return err;
+}
+
+esp_err_t api_client_send_heartbeat_v2(const char* device_id, const char* device_token, const heartbeat_data_t* data, heartbeat_response_t* response, api_response_t* api_response)
+{
+    if (!device_id || !device_token || !data || !response || !api_response) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    memset(response, 0, sizeof(heartbeat_response_t));
+    memset(api_response, 0, sizeof(api_response_t));
+    memset(response_buffer, 0, sizeof(response_buffer));
+    
+    char url[256];
+    snprintf(url, sizeof(url), "%s/devices/%s/heartbeat", API_BASE_URL, device_id);
+    
+    cJSON *json = cJSON_CreateObject();
+    cJSON *uptime = cJSON_CreateNumber(data->uptime);
+    cJSON *free_memory = cJSON_CreateNumber(data->free_memory);
+    cJSON *wifi_rssi = cJSON_CreateNumber(data->wifi_rssi);
+    cJSON *battery_level = cJSON_CreateNumber(data->battery_level);
+    cJSON *pump_angle = cJSON_CreateNumber(data->pump_angle);
+    cJSON *room_temp = cJSON_CreateNumber(data->room_temp);
+    cJSON *room_humidity = cJSON_CreateNumber(data->room_humidity);
+    cJSON *last_pump_action = cJSON_CreateString(data->last_pump_action);
+    
+    cJSON_AddItemToObject(json, "uptime", uptime);
+    cJSON_AddItemToObject(json, "free_memory", free_memory);
+    cJSON_AddItemToObject(json, "wifi_rssi", wifi_rssi);
+    cJSON_AddItemToObject(json, "battery_level", battery_level);
+    cJSON_AddItemToObject(json, "pump_angle", pump_angle);
+    cJSON_AddItemToObject(json, "room_temp", room_temp);
+    cJSON_AddItemToObject(json, "room_humidity", room_humidity);
+    cJSON_AddItemToObject(json, "last_pump_action", last_pump_action);
+    
+    char *json_string = cJSON_Print(json);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .event_handler = _http_event_handler,
+        .user_data = response_buffer,
+        .timeout_ms = 10000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    
+    char auth_header[600];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", device_token);
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    
+    esp_http_client_set_post_field(client, json_string, strlen(json_string));
+    
+    esp_err_t err = esp_http_client_perform(client);
+    
+    if (err == ESP_OK) {
+        int status_code = esp_http_client_get_status_code(client);
+        api_response->status_code = status_code;
+        
+        if (status_code == 200) {
+            cJSON *response_json = cJSON_Parse(response_buffer);
+            if (response_json) {
+                cJSON *success = cJSON_GetObjectItem(response_json, "success");
+                if (success && cJSON_IsTrue(success)) {
+                    cJSON *data_obj = cJSON_GetObjectItem(response_json, "data");
+                    if (data_obj) {
+                        // Parse server time
+                        cJSON *server_time = cJSON_GetObjectItem(data_obj, "server_time");
+                        if (server_time && cJSON_IsString(server_time)) {
+                            strncpy(response->server_time, server_time->valuestring, sizeof(response->server_time) - 1);
+                        }
+                        
+                        // Parse current time KR
+                        cJSON *current_time_kr = cJSON_GetObjectItem(data_obj, "current_time_kr");
+                        if (current_time_kr && cJSON_IsString(current_time_kr)) {
+                            strncpy(response->current_time_kr, current_time_kr->valuestring, sizeof(response->current_time_kr) - 1);
+                        }
+                        
+                        // Parse alarm info
+                        cJSON *alarm_info = cJSON_GetObjectItem(data_obj, "alarm_info");
+                        if (alarm_info) {
+                            cJSON *next_alarm = cJSON_GetObjectItem(alarm_info, "next_alarm");
+                            if (next_alarm && cJSON_IsString(next_alarm)) {
+                                strncpy(response->alarm_info.next_alarm, next_alarm->valuestring, sizeof(response->alarm_info.next_alarm) - 1);
+                            }
+                            
+                            cJSON *alarm_time_display = cJSON_GetObjectItem(alarm_info, "alarm_time_display");
+                            if (alarm_time_display && cJSON_IsString(alarm_time_display)) {
+                                strncpy(response->alarm_info.alarm_time_display, alarm_time_display->valuestring, sizeof(response->alarm_info.alarm_time_display) - 1);
+                            }
+                            
+                            cJSON *enabled = cJSON_GetObjectItem(alarm_info, "enabled");
+                            if (enabled && cJSON_IsBool(enabled)) {
+                                response->alarm_info.enabled = cJSON_IsTrue(enabled);
+                            }
+                            
+                            cJSON *smart_wake = cJSON_GetObjectItem(alarm_info, "smart_wake");
+                            if (smart_wake && cJSON_IsBool(smart_wake)) {
+                                response->alarm_info.smart_wake = cJSON_IsTrue(smart_wake);
+                            }
+                        }
+                        
+                        // Parse commands
+                        cJSON *commands = cJSON_GetObjectItem(data_obj, "commands");
+                        if (commands && cJSON_IsArray(commands)) {
+                            int command_count = cJSON_GetArraySize(commands);
+                            response->command_count = (command_count > 5) ? 5 : command_count;
+                            
+                            for (int i = 0; i < response->command_count; i++) {
+                                cJSON *command = cJSON_GetArrayItem(commands, i);
+                                if (command) {
+                                    cJSON *type = cJSON_GetObjectItem(command, "type");
+                                    if (type && cJSON_IsString(type)) {
+                                        strncpy(response->commands[i].type, type->valuestring, sizeof(response->commands[i].type) - 1);
+                                    }
+                                    
+                                    cJSON *pump = cJSON_GetObjectItem(command, "pump");
+                                    if (pump && cJSON_IsNumber(pump)) {
+                                        response->commands[i].pump = pump->valueint;
+                                    }
+                                    
+                                    cJSON *reason = cJSON_GetObjectItem(command, "reason");
+                                    if (reason && cJSON_IsString(reason)) {
+                                        strncpy(response->commands[i].reason, reason->valuestring, sizeof(response->commands[i].reason) - 1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    api_response->success = true;
+                    strncpy(api_response->message, "Heartbeat sent successfully", sizeof(api_response->message) - 1);
+                } else {
+                    api_response->success = false;
+                    strncpy(api_response->message, "Heartbeat failed", sizeof(api_response->message) - 1);
+                }
+                cJSON_Delete(response_json);
+            }
+        } else {
+            api_response->success = false;
+            snprintf(api_response->message, sizeof(api_response->message), "HTTP error: %d", status_code);
+        }
+        
+        ESP_LOGD(TAG, "Heartbeat v2 response: %d", status_code);
+    } else {
+        api_response->success = false;
+        snprintf(api_response->message, sizeof(api_response->message), "HTTP request failed: %s", esp_err_to_name(err));
+        ESP_LOGD(TAG, "Heartbeat v2 failed: %s", esp_err_to_name(err));
+    }
+    
+    esp_http_client_cleanup(client);
+    free(json_string);
+    cJSON_Delete(json);
+    
+    return err;
+}
+
 esp_err_t api_client_register_device(const char* device_id, const char* token, api_response_t* response)
 {
     if (!device_id || !token || !response) {

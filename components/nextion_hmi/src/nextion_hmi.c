@@ -293,3 +293,96 @@ esp_err_t nextion_clear_fota_status(void)
     }
     return ret;
 }
+
+esp_err_t nextion_show_heartbeat_data_detailed(const char* current_time_kr, const char* alarm_time_display, float temperature, float humidity)
+{
+    esp_err_t ret;
+    
+    ret = nextion_change_page(1);
+    if (ret != ESP_OK) return ret;
+    
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Extract time components from current_time_kr
+    // Expected format: "2025년 8월 29일 오후 2:30" -> extract "14:30"
+    char time_str[16] = "00:00";
+    if (current_time_kr) {
+        // Look for time pattern like "오전 7:20" or "오후 2:30"
+        const char* time_part = strstr(current_time_kr, "오전 ");
+        if (!time_part) {
+            time_part = strstr(current_time_kr, "오후 ");
+        }
+        if (time_part) {
+            // Skip "오전 " or "오후 " (3 bytes each in UTF-8)
+            time_part += 6;
+            int hour, minute;
+            if (sscanf(time_part, "%d:%d", &hour, &minute) == 2) {
+                // Convert to 24-hour format if needed
+                if (strstr(current_time_kr, "오후 ") && hour != 12) {
+                    hour += 12;
+                } else if (strstr(current_time_kr, "오전 ") && hour == 12) {
+                    hour = 0;
+                }
+                snprintf(time_str, sizeof(time_str), "%02d:%02d", hour, minute);
+            }
+        }
+    }
+    
+    // Extract alarm time components
+    // Expected format: "오전 7:20" -> extract hour and minute separately
+    char alarm_hour[8] = "00";
+    char alarm_minute[8] = "00";
+    if (alarm_time_display) {
+        const char* alarm_part = strstr(alarm_time_display, "오전 ");
+        bool is_pm = false;
+        if (!alarm_part) {
+            alarm_part = strstr(alarm_time_display, "오후 ");
+            is_pm = true;
+        }
+        if (alarm_part) {
+            alarm_part += 6; // Skip "오전 " or "오후 "
+            int hour, minute;
+            if (sscanf(alarm_part, "%d:%d", &hour, &minute) == 2) {
+                // Convert to 24-hour format
+                if (is_pm && hour != 12) {
+                    hour += 12;
+                } else if (!is_pm && hour == 12) {
+                    hour = 0;
+                }
+                snprintf(alarm_hour, sizeof(alarm_hour), "%d", hour);
+                snprintf(alarm_minute, sizeof(alarm_minute), "%02d", minute);
+            }
+        }
+    }
+    
+    // Format temperature and humidity as plain numbers
+    char temp_str[16];
+    char humidity_str[16];
+    snprintf(temp_str, sizeof(temp_str), "%.1f", temperature);
+    snprintf(humidity_str, sizeof(humidity_str), "%.0f", humidity);
+    
+    // t0: Current time (HH:MM format)
+    ret = nextion_set_text("t0", time_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t1: Alarm hour
+    ret = nextion_set_text("t1", alarm_hour);
+    if (ret != ESP_OK) return ret;
+    
+    // t2: Temperature (plain number)
+    ret = nextion_set_text("t2", temp_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t3: Humidity (plain number)
+    ret = nextion_set_text("t3", humidity_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t4: Alarm minute (if available)
+    ret = nextion_set_text("t4", alarm_minute);
+    if (ret != ESP_OK) return ret;
+    
+    ESP_LOGI(TAG, "Heartbeat data updated on page 1: Time=%s, AlarmH=%s, AlarmM=%s, Temp=%s, Humidity=%s", 
+             time_str, alarm_hour, alarm_minute, temp_str, humidity_str);
+    
+    return ESP_OK;
+}
