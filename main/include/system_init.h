@@ -8,6 +8,7 @@
 esp_err_t system_components_init(void);
 void system_callbacks_setup(void);
 void provisioning_mode_start(const char* device_id);
+void phase2_wifi_connect_and_register(const char* device_id);
 void normal_mode_start(void);
 
 #endif

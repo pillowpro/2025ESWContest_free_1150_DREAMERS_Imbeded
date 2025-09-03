@@ -30,7 +30,7 @@ static void send_heartbeat_if_needed(const char* device_id)
     heartbeat_data.free_memory = esp_get_free_heap_size();
     heartbeat_data.wifi_rssi = -45; // dummy value
     heartbeat_data.battery_level = 85; // dummy value
-    heartbeat_data.pump_angle = 3; // dummy value
+    heartbeat_data.pump_angle = 5; // pump_level as per API spec
     heartbeat_data.room_temp = 24.2f; // dummy value
     heartbeat_data.room_humidity = 58.0f; // dummy value
     strcpy(heartbeat_data.last_pump_action, "2025-08-29T03:25:12+09:00"); // dummy value

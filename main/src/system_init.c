@@ -86,15 +86,32 @@ void provisioning_mode_start(const char* device_id)
     ESP_LOGI(TAG, "Provisioning AP: %s / %s", ap_ssid, ap_password);
 }
 
+void phase2_wifi_connect_and_register(const char* device_id)
+{
+    ESP_LOGI(TAG, "Phase 2: Connecting to WiFi and registering device");
+    nextion_show_setup_status("Connecting to WiFi...");
+    
+    char ssid[33], password[65];
+    device_config_get_wifi_credentials(ssid, password);
+    wifi_manager_connect_wifi(ssid, password);
+    
+    // Device registration will happen in WiFi event handler
+    // After successful registration, it will reboot to Phase 3
+}
+
 void normal_mode_start(void)
 {
-    ESP_LOGI(TAG, "Device already provisioned, connecting to WiFi");
-    nextion_show_setup_status("Connecting to WiFi...");
+    ESP_LOGI(TAG, "Phase 3: Normal mode - Device fully provisioned");
+    nextion_show_setup_status("Starting Normal Mode...");
     
     device_config_get_auth_token(g_app_state.auth_token);
     device_config_get_device_token(g_app_state.device_token);
     
     char ssid[33], password[65];
     device_config_get_wifi_credentials(ssid, password);
-    wifi_manager_connect_wifi(ssid, password);
+    wifi_manager_connect_wifi_normal_mode(ssid, password);
+    
+    // After WiFi connection, go directly to page 1 and start heartbeat
+    nextion_change_page(1);
+    app_state_set_home_mode(true);
 }

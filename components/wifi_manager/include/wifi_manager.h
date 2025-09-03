@@ -16,7 +16,8 @@ typedef enum {
     WIFI_MGR_EVENT_STA_DISCONNECTED,
     WIFI_MGR_EVENT_PROVISIONING_SUCCESS,
     WIFI_MGR_EVENT_PROVISIONING_FAILED,
-    WIFI_MGR_EVENT_CONNECTION_MAX_RETRIES_FAILED
+    WIFI_MGR_EVENT_CONNECTION_MAX_RETRIES_FAILED,
+    WIFI_MGR_EVENT_NORMAL_MODE_CONNECTED
 } wifi_manager_event_t;
 
 typedef void (*wifi_event_callback_t)(wifi_manager_event_t event, void* data);
@@ -25,6 +26,7 @@ esp_err_t wifi_manager_init(void);
 esp_err_t wifi_manager_start_provisioning(const char* device_id, const char* password);
 esp_err_t wifi_manager_stop_provisioning(void);
 esp_err_t wifi_manager_connect_wifi(const char* ssid, const char* password);
+esp_err_t wifi_manager_connect_wifi_normal_mode(const char* ssid, const char* password);
 esp_err_t wifi_manager_set_event_callback(wifi_event_callback_t callback);
 bool wifi_manager_is_connected(void);
 esp_err_t wifi_manager_get_ip_info(esp_netif_ip_info_t* ip_info);

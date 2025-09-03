@@ -5,6 +5,8 @@
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "lwip/dns.h"
+#include "lwip/sockets.h"
 #include <string.h>
 
 static const char *TAG = "WIFI_MANAGER";
@@ -40,6 +42,21 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        
+        // Set DNS servers to Cloudflare DNS for better connectivity
+        ip_addr_t dns_primary, dns_secondary;
+        memset(&dns_primary, 0, sizeof(ip_addr_t));    // Critical: Initialize to zero
+        memset(&dns_secondary, 0, sizeof(ip_addr_t));  // Critical: Initialize to zero
+        
+        dns_primary.type = IPADDR_TYPE_V4;
+        dns_primary.u_addr.ip4.addr = PP_HTONL(LWIP_MAKEU32(1,1,1,1));      // 1.1.1.1
+        dns_secondary.type = IPADDR_TYPE_V4;
+        dns_secondary.u_addr.ip4.addr = PP_HTONL(LWIP_MAKEU32(1,0,0,1));    // 1.0.0.1
+        
+        dns_setserver(0, &dns_primary);  // Primary DNS
+        dns_setserver(1, &dns_secondary); // Secondary DNS
+        ESP_LOGI(TAG, "DNS servers set to 1.1.1.1 and 1.0.0.1");
+        
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         if (s_event_callback) {
@@ -153,6 +170,14 @@ esp_err_t wifi_manager_connect_wifi(const char* ssid, const char* password)
         strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
     }
     
+    // Stop WiFi first to avoid ESP_ERR_WIFI_STATE error
+    esp_err_t ret = esp_wifi_stop();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGE(TAG, "Failed to stop WiFi: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Set to STA mode only for clean connection
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -163,7 +188,7 @@ esp_err_t wifi_manager_connect_wifi(const char* ssid, const char* password)
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE,
                                            pdFALSE,
-                                           portMAX_DELAY);
+                                           pdMS_TO_TICKS(30000)); // 30 second timeout
     
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to WiFi");
@@ -206,4 +231,65 @@ esp_err_t wifi_manager_get_ip_info(esp_netif_ip_info_t* ip_info)
     }
     
     return esp_netif_get_ip_info(s_sta_netif, ip_info);
+}
+
+esp_err_t wifi_manager_connect_wifi_normal_mode(const char* ssid, const char* password)
+{
+    if (!ssid) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    
+    wifi_config_t wifi_config = {
+        .sta = {
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .capable = true,
+                .required = false
+            },
+        },
+    };
+    
+    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+    if (password) {
+        strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
+    }
+    
+    // Stop WiFi first to avoid ESP_ERR_WIFI_STATE error
+    esp_err_t ret = esp_wifi_stop();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGE(TAG, "Failed to stop WiFi: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Set to STA mode only for clean connection
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    
+    ESP_LOGI(TAG, "Connecting to WiFi SSID:%s", ssid);
+    
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE,
+                                           pdFALSE,
+                                           pdMS_TO_TICKS(30000)); // 30 second timeout
+    
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "Connected to WiFi in normal mode");
+        if (s_event_callback) {
+            s_event_callback(WIFI_MGR_EVENT_NORMAL_MODE_CONNECTED, NULL);
+        }
+        return ESP_OK;
+    } else if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGI(TAG, "Failed to connect to WiFi in normal mode");
+        if (s_event_callback) {
+            s_event_callback(WIFI_MGR_EVENT_PROVISIONING_FAILED, NULL);
+        }
+        return ESP_FAIL;
+    } else {
+        ESP_LOGE(TAG, "UNEXPECTED EVENT");
+        return ESP_ERR_TIMEOUT;
+    }
 }

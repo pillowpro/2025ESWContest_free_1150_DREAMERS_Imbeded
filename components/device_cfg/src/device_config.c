@@ -113,6 +113,7 @@ esp_err_t device_config_get_wifi_credentials(char* ssid, char* password)
 esp_err_t device_config_set_provisioned(bool provisioned)
 {
     if (!g_initialized) {
+        ESP_LOGE(TAG, "Device config not initialized");
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -121,12 +122,22 @@ esp_err_t device_config_set_provisioned(bool provisioned)
     nvs_handle_t nvs_handle;
     esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS handle: %s", esp_err_to_name(ret));
         return ret;
     }
     
     ret = nvs_set_blob(nvs_handle, "config", &g_device_config, sizeof(device_config_t));
-    if (ret == ESP_OK) {
-        ret = nvs_commit(nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set provisioned blob: %s", esp_err_to_name(ret));
+        nvs_close(nvs_handle);
+        return ret;
+    }
+    
+    ret = nvs_commit(nvs_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Successfully saved provisioned = %s to NVS", provisioned ? "true" : "false");
     }
     
     nvs_close(nvs_handle);
@@ -136,10 +147,13 @@ esp_err_t device_config_set_provisioned(bool provisioned)
 bool device_config_is_provisioned(void)
 {
     if (!g_initialized) {
+        ESP_LOGW(TAG, "Device config not initialized, returning false");
         return false;
     }
     
-    return g_device_config.is_provisioned;
+    bool provisioned = g_device_config.is_provisioned;
+    ESP_LOGI(TAG, "Device provisioned status: %s", provisioned ? "true" : "false");
+    return provisioned;
 }
 
 esp_err_t device_config_save_auth_token(const char* token)

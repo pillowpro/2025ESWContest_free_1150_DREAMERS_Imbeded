@@ -3,16 +3,16 @@
 ╠═╝║║  ║  ║ ║║║║  ╠═╝╠╦╝║ ║
 ╩  ╩╩═╝╩═╝╚═╝╚╩╝  ╩  ╩╚═╚═╝
 
- * 베개프로 압력제어시스템 v4.0 (시간기반 주입)
+ * 베개프로 압력제어시스템 v4.3 (SET_ALL 추가)
  */
 
 #include <SoftwareSerial.h>
-SoftwareSerial uartBridge(13, -1);
+SoftwareSerial uartBridge(A2, -1);
 
-#define LEFT_PUMP_RATIO 5.0     // 100ms당 5% 주입
-#define RIGHT_PUMP_RATIO 5.0    // 100ms당 5% 주입
-#define LEFT_AIR_TIME 30000     // 1% 빼는데 30초
-#define RIGHT_AIR_TIME 30000    // 1% 빼는데 30초
+#define LEFT_PUMP_RATIO 1.5
+#define RIGHT_PUMP_RATIO 1.5
+#define LEFT_AIR_TIME 30000
+#define RIGHT_AIR_TIME 30000
 #define MAX_PRESSURE_PSI_L_CONTINUOUS 0.95
 #define MAX_PRESSURE_PSI_R_CONTINUOUS 0.7
 #define MAINTAIN_INTERVAL 600000
@@ -20,6 +20,9 @@ SoftwareSerial uartBridge(13, -1);
 #define MIN_MAINTAIN_LEVEL 30.0
 #define MAX_MOTOR_ON_TIME 50
 #define DEBUG 1
+#define UART_BUFFER_SIZE 256
+#define UART_TIMEOUT 50
+#define SET_ALL_DELAY 10000
 
 const int ALARM_MOTOR = 2, LEFT_PUMP = 3, ALARM_MOTOR_2 = 5;
 const int RIGHT_PUMP = 7, LEFT_AIR_PUMP = 10, RIGHT_AIR_PUMP = 11;
@@ -30,12 +33,17 @@ const byte rhythmPattern[] = {40, 10, 25, 40, 15, 40, 10, 25, 25, 40, 10, 40, 15
 unsigned long alarmStartTime, lastPrintTime, leftMaintainTime, rightMaintainTime;
 unsigned long leftPumpStartTime, rightPumpStartTime, leftAirStartTime, rightAirStartTime;
 unsigned long leftLastOverTime, rightLastOverTime;
+unsigned long setAllStartTime;
 byte alarmIndex = 0, leftOverCount = 0, rightOverCount = 0;
 float leftTargetPressure = 0, rightTargetPressure = 0;
 float leftCurrentLevel = 0, rightCurrentLevel = 0;
 
 bool alarmActive = false, leftPumpActive = false, rightPumpActive = false;
 bool leftAirActive = false, rightAirActive = false, leftMaintainMode = false, rightMaintainMode = false;
+bool setAllActive = false;
+
+String uartBuffer = "";
+unsigned long lastUartReceive = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -49,6 +57,9 @@ void setup() {
   unsigned long t = millis();
   lastPrintTime = leftMaintainTime = rightMaintainTime = t;
   leftLastOverTime = rightLastOverTime = t;
+  lastUartReceive = t;
+  setAllStartTime = t;
+  uartBuffer.reserve(UART_BUFFER_SIZE);
 }
 
 void loop() {
@@ -56,14 +67,45 @@ void loop() {
   checkSerialCommands();
   updatePumpControl();
   checkMaintenance();
-
-  if (uartBridge.available()) Serial.write(uartBridge.read());
+  checkSetAllTimer();
+  handleUartData();
   
   if (millis() - lastPrintTime >= 1000) {
-    printStatus();
     lastPrintTime = millis();
   }
   delay(50);
+}
+
+void checkSetAllTimer() {
+  if (setAllActive && millis() - setAllStartTime >= SET_ALL_DELAY) {
+    leftTargetPressure = 100.0;
+    rightTargetPressure = 100.0;
+    setLeftPressure();
+    setRightPressure();
+    setAllActive = false;
+    sendResponse("SET_ALL", "EXECUTED");
+    if (DEBUG) {
+      Serial.println("SET_ALL executed: Both sides -> 100%");
+    }
+  }
+}
+
+void handleUartData() {
+  while (uartBridge.available()) {
+    char c = uartBridge.read();
+    uartBuffer += c;
+    lastUartReceive = millis();
+    
+    if (uartBuffer.length() >= UART_BUFFER_SIZE - 1) {
+      Serial.print(uartBuffer);
+      uartBuffer = "";
+    }
+  }
+  
+  if (uartBuffer.length() > 0 && millis() - lastUartReceive > UART_TIMEOUT) {
+    Serial.print(uartBuffer);
+    uartBuffer = "";
+  }
 }
 
 void allRelaysOff() {
@@ -77,29 +119,42 @@ void updateAlarmRhythm() {
   if (!alarmActive) return;
   
   unsigned long elapsed = millis() - alarmStartTime;
-  unsigned long cycleTime = elapsed % 2000;
+  unsigned long patternTime = 0;
   
-  if (alarmIndex < 16) {
-    byte onTime = rhythmPattern[alarmIndex];
-    if (onTime > MAX_MOTOR_ON_TIME) onTime = MAX_MOTOR_ON_TIME;
-    
-    byte cyclePos = (cycleTime / 125) % 16;
-    
-    if (cyclePos == alarmIndex && cycleTime % 125 < onTime) {
-      if (alarmIndex % 2 == 0) {
-        controlRelay(ALARM_MOTOR, true); controlRelay(ALARM_MOTOR_2, false);
-      } else {
-        controlRelay(ALARM_MOTOR, false); controlRelay(ALARM_MOTOR_2, true);
-      }
-    } else {
-      controlRelay(ALARM_MOTOR, false); controlRelay(ALARM_MOTOR_2, false);
-    }
-    
-    if (cycleTime < 125) alarmIndex = (alarmIndex + 1) % 16;
+  for (int i = 0; i < 16; i += 2) {
+    patternTime += rhythmPattern[i] + rhythmPattern[i + 1];
   }
+  
+  unsigned long cycleTime = elapsed % patternTime;
+  unsigned long currentPos = 0;
+  bool motorsOn = false;
+  
+  for (int i = 0; i < 16; i += 2) {
+    byte onTime = rhythmPattern[i];
+    byte offTime = rhythmPattern[i + 1];
+    
+    if (onTime > MAX_MOTOR_ON_TIME) onTime = MAX_MOTOR_ON_TIME;
+    if (offTime < 100) offTime = 100;
+    
+    if (cycleTime >= currentPos && cycleTime < currentPos + onTime) {
+      motorsOn = true;
+      break;
+    } else if (cycleTime >= currentPos + onTime && cycleTime < currentPos + onTime + offTime) {
+      motorsOn = false;
+      break;
+    }
+    currentPos += onTime + offTime;
+  }
+  
+  controlRelay(ALARM_MOTOR, motorsOn);
+  controlRelay(ALARM_MOTOR_2, motorsOn);
 }
 
 void checkSerialCommands() {
+  if (uartBridge.available()) {
+    return;
+  }
+  
   if (Serial.available()) {
     String cmd = Serial.readString();
     cmd.trim();
@@ -112,6 +167,14 @@ void checkSerialCommands() {
       rightTargetPressure = cmd.substring(10).toFloat();
       setRightPressure();
     }
+    else if (cmd == "SET_ALL") {
+      setAllActive = true;
+      setAllStartTime = millis();
+      sendResponse("SET_ALL", "SCHEDULED");
+      if (DEBUG) {
+        Serial.println("SET_ALL scheduled: 10 seconds to 100%");
+      }
+    }
     else if (cmd == "STOP_LEFT") {
       leftPumpActive = leftAirActive = leftMaintainMode = false;
       controlRelay(LEFT_PUMP, false); controlRelay(LEFT_AIR_PUMP, false);
@@ -122,6 +185,13 @@ void checkSerialCommands() {
       controlRelay(RIGHT_PUMP, false); controlRelay(RIGHT_AIR_PUMP, false);
       sendResponse("STOP_RIGHT", "OK");
     }
+    else if (cmd == "CANCEL_SET_ALL") {
+      setAllActive = false;
+      sendResponse("CANCEL_SET_ALL", "OK");
+      if (DEBUG) {
+        Serial.println("SET_ALL cancelled");
+      }
+    }
     else if (cmd.startsWith("SET_ALARM:")) {
       if (cmd.substring(10).toInt() == 1) {
         alarmStartTime = millis(); alarmIndex = 0; alarmActive = true;
@@ -131,19 +201,27 @@ void checkSerialCommands() {
         sendResponse("SET_ALARM", "OFF");
       }
     }
+    else if (cmd == "UART_CLEAR") {
+      uartBuffer = "";
+      Serial.println("UART buffer cleared manually");
+    }
+    else if (cmd == "UART_STATUS") {
+      Serial.print("UART buffer length: ");
+      Serial.println(uartBuffer.length());
+      Serial.print("Buffer content: ");
+      Serial.println(uartBuffer);
+    }
   }
 }
 
 void updatePumpControl() {
   unsigned long t = millis();
   
-  // 왼쪽 펌프 제어 (시간기반 + 센서 즉시정지)
   if (leftPumpActive) {
     unsigned long elapsed = t - leftPumpStartTime;
     float targetTime = (leftTargetPressure - leftCurrentLevel) * 100 / LEFT_PUMP_RATIO;
     float sensorPressure = getPressurePercent(readPressure(PRESSURE_LEFT), true);
     
-    // 센서 즉시 정지 체크
     if (sensorPressure >= leftTargetPressure) {
       if (t - leftLastOverTime <= 1000) leftOverCount++; else leftOverCount = 1;
       leftLastOverTime = t;
@@ -156,7 +234,6 @@ void updatePumpControl() {
       }
     }
     
-    // 시간 도달
     if (elapsed >= targetTime) {
       leftPumpActive = false; controlRelay(LEFT_PUMP, false);
       leftCurrentLevel = leftTargetPressure; leftMaintainMode = true; leftMaintainTime = t;
@@ -164,13 +241,11 @@ void updatePumpControl() {
     }
   }
   
-  // 오른쪽 펌프 제어 (시간기반 + 센서 즉시정지)
   if (rightPumpActive) {
     unsigned long elapsed = t - rightPumpStartTime;
     float targetTime = (rightTargetPressure - rightCurrentLevel) * 100 / RIGHT_PUMP_RATIO;
     float sensorPressure = getPressurePercent(readPressure(PRESSURE_RIGHT), false);
     
-    // 센서 즉시 정지 체크
     if (sensorPressure >= rightTargetPressure) {
       if (t - rightLastOverTime <= 1000) rightOverCount++; else rightOverCount = 1;
       rightLastOverTime = t;
@@ -183,7 +258,6 @@ void updatePumpControl() {
       }
     }
     
-    // 시간 도달
     if (elapsed >= targetTime) {
       rightPumpActive = false; controlRelay(RIGHT_PUMP, false);
       rightCurrentLevel = rightTargetPressure; rightMaintainMode = true; rightMaintainTime = t;
@@ -191,7 +265,6 @@ void updatePumpControl() {
     }
   }
   
-  // 방출 펌프 제어 (시간기반)
   if (leftAirActive) {
     unsigned long elapsed = t - leftAirStartTime;
     float pressureDiff = leftCurrentLevel - leftTargetPressure;
@@ -236,12 +309,12 @@ void checkMaintenance() {
     if (DEBUG) { Serial.print("R maintain: "); Serial.print(rightCurrentLevel); Serial.print("->"); Serial.println(rightTargetPressure); }
   }
 }
+
 void setLeftPressure() {
   leftPumpActive = leftAirActive = false;
   controlRelay(LEFT_PUMP, false); controlRelay(LEFT_AIR_PUMP, false);
   leftOverCount = 0;
   
-  // 센서 안보고 내부 레벨값만 사용
   if (leftCurrentLevel < leftTargetPressure) {
     leftPumpActive = true; leftPumpStartTime = millis(); controlRelay(LEFT_PUMP, true);
     sendResponse("LEFT_SET", "PUMP");
@@ -261,7 +334,6 @@ void setRightPressure() {
   controlRelay(RIGHT_PUMP, false); controlRelay(RIGHT_AIR_PUMP, false);
   rightOverCount = 0;
   
-  // 센서 안보고 내부 레벨값만 사용
   if (rightCurrentLevel < rightTargetPressure) {
     rightPumpActive = true; rightPumpStartTime = millis(); controlRelay(RIGHT_PUMP, true);
     sendResponse("RIGHT_SET", "PUMP");

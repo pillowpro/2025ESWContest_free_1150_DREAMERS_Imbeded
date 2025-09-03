@@ -242,6 +242,24 @@ esp_err_t nextion_show_home_data(const char* temperature, const char* weather, c
     
     vTaskDelay(pdMS_TO_TICKS(100));
     
+    // Fixed dummy data for home display
+    ret = nextion_set_text("t0", "13°C");
+    if (ret != ESP_OK) return ret;
+    
+    ret = nextion_set_text("t1", "--");
+    if (ret != ESP_OK) return ret;
+    
+    ret = nextion_set_text("t2", "--");
+    if (ret != ESP_OK) return ret;
+    
+    ret = nextion_set_text("t3", "--");
+    if (ret != ESP_OK) return ret;
+    
+    ret = nextion_set_text("t4", "--");
+    if (ret != ESP_OK) return ret;
+    
+    // Commented out original dynamic content
+    /*
     // t0: Temperature display
     char temp_display[64];
     snprintf(temp_display, sizeof(temp_display), "%s°C", temperature);
@@ -269,9 +287,9 @@ esp_err_t nextion_show_home_data(const char* temperature, const char* weather, c
     snprintf(alarm_display, sizeof(alarm_display), "Alarm: %s", alarm_time);
     ret = nextion_set_text("t4", alarm_display);
     if (ret != ESP_OK) return ret;
+    */
     
-    ESP_LOGI(TAG, "Home data updated: Temp=%s°C, Weather=%s, Sleep=%s, Noise=%sdB, Alarm=%s", 
-             temperature, weather, sleep_score, noise_level, alarm_time);
+    ESP_LOGI(TAG, "Home data updated with dummy values: t0=13°C, t1-t4=--");
     
     return ESP_OK;
 }
@@ -361,28 +379,46 @@ esp_err_t nextion_show_heartbeat_data_detailed(const char* current_time_kr, cons
     snprintf(temp_str, sizeof(temp_str), "%.1f", temperature);
     snprintf(humidity_str, sizeof(humidity_str), "%.0f", humidity);
     
-    // t0: Current time (HH:MM format)
-    ret = nextion_set_text("t0", time_str);
+    // Fixed dummy data for heartbeat display
+    ret = nextion_set_text("t5", "1:24");
     if (ret != ESP_OK) return ret;
     
-    // t1: Alarm hour
-    ret = nextion_set_text("t1", alarm_hour);
+    ret = nextion_set_text("t6", "4");
     if (ret != ESP_OK) return ret;
     
-    // t2: Temperature (plain number)
-    ret = nextion_set_text("t2", temp_str);
+    ret = nextion_set_text("t7", "--");
     if (ret != ESP_OK) return ret;
     
-    // t3: Humidity (plain number)
-    ret = nextion_set_text("t3", humidity_str);
+    ret = nextion_set_text("t8", "--");
     if (ret != ESP_OK) return ret;
     
-    // t4: Alarm minute (if available)
-    ret = nextion_set_text("t4", alarm_minute);
+    ret = nextion_set_text("t9", "24");
     if (ret != ESP_OK) return ret;
     
-    ESP_LOGI(TAG, "Heartbeat data updated on page 1: Time=%s, AlarmH=%s, AlarmM=%s, Temp=%s, Humidity=%s", 
-             time_str, alarm_hour, alarm_minute, temp_str, humidity_str);
+    // Commented out original dynamic content
+    /*
+    // t5: Current time (HH:MM format)
+    ret = nextion_set_text("t5", time_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t6: Alarm hour
+    ret = nextion_set_text("t6", alarm_hour);
+    if (ret != ESP_OK) return ret;
+    
+    // t7: Temperature (plain number)
+    ret = nextion_set_text("t7", temp_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t8: Humidity (plain number)
+    ret = nextion_set_text("t8", humidity_str);
+    if (ret != ESP_OK) return ret;
+    
+    // t9: Alarm minute (if available)
+    ret = nextion_set_text("t9", alarm_minute);
+    if (ret != ESP_OK) return ret;
+    */
+    
+    ESP_LOGI(TAG, "Heartbeat data updated with dummy values: t5=1:24, t6=4, t7-t8=--, t9=24");
     
     return ESP_OK;
 }

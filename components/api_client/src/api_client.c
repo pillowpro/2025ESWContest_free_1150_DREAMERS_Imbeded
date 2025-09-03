@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include <string.h>
 
 static const char *TAG = "API_CLIENT";
@@ -88,7 +89,9 @@ esp_err_t api_client_provision_device(const provisioning_request_t* request, pro
         .method = HTTP_METHOD_POST,
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
-        .timeout_ms = 10000,
+        .timeout_ms = 30000,  // Increase timeout to 30 seconds
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -157,26 +160,12 @@ esp_err_t api_client_send_heartbeat_v2(const char* device_id, const char* device
     memset(response_buffer, 0, sizeof(response_buffer));
     
     char url[256];
-    snprintf(url, sizeof(url), "%s/devices/%s/heartbeat", API_BASE_URL, device_id);
+    snprintf(url, sizeof(url), "%s/devices/heartbeat", API_BASE_URL);
     
     cJSON *json = cJSON_CreateObject();
-    cJSON *uptime = cJSON_CreateNumber(data->uptime);
-    cJSON *free_memory = cJSON_CreateNumber(data->free_memory);
-    cJSON *wifi_rssi = cJSON_CreateNumber(data->wifi_rssi);
-    cJSON *battery_level = cJSON_CreateNumber(data->battery_level);
-    cJSON *pump_angle = cJSON_CreateNumber(data->pump_angle);
-    cJSON *room_temp = cJSON_CreateNumber(data->room_temp);
-    cJSON *room_humidity = cJSON_CreateNumber(data->room_humidity);
-    cJSON *last_pump_action = cJSON_CreateString(data->last_pump_action);
+    cJSON *pump_level = cJSON_CreateNumber(data->pump_angle);  // Use pump_angle as pump_level
     
-    cJSON_AddItemToObject(json, "uptime", uptime);
-    cJSON_AddItemToObject(json, "free_memory", free_memory);
-    cJSON_AddItemToObject(json, "wifi_rssi", wifi_rssi);
-    cJSON_AddItemToObject(json, "battery_level", battery_level);
-    cJSON_AddItemToObject(json, "pump_angle", pump_angle);
-    cJSON_AddItemToObject(json, "room_temp", room_temp);
-    cJSON_AddItemToObject(json, "room_humidity", room_humidity);
-    cJSON_AddItemToObject(json, "last_pump_action", last_pump_action);
+    cJSON_AddItemToObject(json, "pump_level", pump_level);
     
     char *json_string = cJSON_Print(json);
     
@@ -185,7 +174,9 @@ esp_err_t api_client_send_heartbeat_v2(const char* device_id, const char* device
         .method = HTTP_METHOD_POST,
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
-        .timeout_ms = 10000,
+        .timeout_ms = 30000,  // Increase timeout to 30 seconds
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -325,6 +316,8 @@ esp_err_t api_client_register_device(const char* device_id, const char* token, a
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
         .timeout_ms = 5000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -382,7 +375,9 @@ esp_err_t api_client_check_firmware_update(const char* device_id, const char* to
         .method = HTTP_METHOD_GET,
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
-        .timeout_ms = 10000,
+        .timeout_ms = 30000,  // Increase timeout to 30 seconds
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -437,6 +432,8 @@ esp_err_t api_client_get_home_data(const char* device_id, const char* token, hom
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
         .timeout_ms = 5000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -543,6 +540,8 @@ esp_err_t api_client_send_heartbeat(const char* device_id, const char* token, ap
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
         .timeout_ms = 5000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -607,6 +606,8 @@ esp_err_t api_client_update_status(const char* device_id, const char* token, con
         .event_handler = _http_event_handler,
         .user_data = response_buffer,
         .timeout_ms = 5000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);

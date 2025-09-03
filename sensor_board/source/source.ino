@@ -68,6 +68,7 @@ struct SensorData {
 
 SensorData sensors[SENSOR_COUNT];
 bool sensorConnected[SENSOR_COUNT] = {0,0,0,0,0};
+bool sensorTouched[SENSOR_COUNT] = {false,false,false,false,false};  // 접촉 여부 추가
 uint16_t irBuffer[SENSOR_COUNT][BUFFER_SIZE];
 uint16_t redBuffer[SENSOR_COUNT][BUFFER_SIZE];
 uint8_t bufferIndex[SENSOR_COUNT] = {0};
@@ -170,7 +171,11 @@ void updateSensor(uint8_t sensorIndex){
     uint16_t irValue = (max30105[sensorIndex].getIR() + irOffsets[sensorIndex]);
     uint16_t redValue = (max30105[sensorIndex].getRed() + redOffsets[sensorIndex]);
     
-    if(!sensorConnected[sensorIndex] || irValue<MIN_VALID_IR){
+    // 센서 접촉 여부 업데이트
+    if(sensorConnected[sensorIndex] && irValue >= MIN_VALID_IR){
+        sensorTouched[sensorIndex] = true;
+    } else {
+        sensorTouched[sensorIndex] = false;
         sensors[sensorIndex].isValid=false;
         sensors[sensorIndex].beatAvg=0;
         sensors[sensorIndex].spo2Value=0;
@@ -283,18 +288,9 @@ void loop(){
         Serial.print(a.acceleration.z, 2);
         Serial.print("},\"sensors\":[");
         
+        // 간소화된 센서 상태 출력 - 접촉 여부만
         for(uint8_t i=0;i<SENSOR_COUNT;i++){
-            Serial.print("{\"id\":");
-            Serial.print(i);
-            Serial.print(",\"connected\":");
-            Serial.print(sensorConnected[i] ? "true" : "false");
-            Serial.print(",\"HR\":");
-            Serial.print(sensors[i].beatAvg);
-            Serial.print(",\"SpO2\":");
-            Serial.print(sensors[i].spo2Value);
-            Serial.print(",\"valid\":");
-            Serial.print(sensors[i].isValid ? "true" : "false");
-            Serial.print("}");
+            Serial.print(sensorTouched[i] ? "true" : "false");
             if(i<SENSOR_COUNT-1) Serial.print(",");
         }
         
