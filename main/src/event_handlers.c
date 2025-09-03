@@ -58,7 +58,7 @@ void nextion_event_handler(nextion_event_t* event)
     }
 }
 
-static esp_err_t provision_device_new_api(const char* provisioning_code, const char* temp_token)
+static esp_err_t provision_device_new_api(const char* provisioning_code)
 {
     provisioning_request_t request = {0};
     provisioning_response_t response = {0};
@@ -140,9 +140,7 @@ static void handle_provisioning_success(void)
     char temp_token[256];
     
     device_config_get_provisioning_code(provisioning_code);
-    device_config_get_auth_token(temp_token);
-    
-    provision_device_new_api(provisioning_code, temp_token);
+    provision_device_new_api(provisioning_code);
     
     wifi_manager_stop_provisioning();
     web_server_stop();

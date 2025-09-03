@@ -71,9 +71,15 @@ esp_err_t api_client_provision_device(const provisioning_request_t* request, pro
     cJSON *json = cJSON_CreateObject();
     cJSON *provisioning_code = cJSON_CreateString(request->provisioning_code);
     cJSON *device_id = cJSON_CreateString(request->device_id);
+    cJSON *device_type = cJSON_CreateString(request->device_type);
+    cJSON *firmware_version = cJSON_CreateString(request->firmware_version);
+    cJSON *mac_address = cJSON_CreateString(request->mac_address);
     
     cJSON_AddItemToObject(json, "provisioning_code", provisioning_code);
     cJSON_AddItemToObject(json, "device_id", device_id);
+    cJSON_AddItemToObject(json, "device_type", device_type);
+    cJSON_AddItemToObject(json, "firmware_version", firmware_version);
+    cJSON_AddItemToObject(json, "mac_address", mac_address);
     
     char *json_string = cJSON_Print(json);
     
@@ -96,7 +102,7 @@ esp_err_t api_client_provision_device(const provisioning_request_t* request, pro
         int status_code = esp_http_client_get_status_code(client);
         api_response->status_code = status_code;
         
-        if (status_code == 200) {
+        if (status_code == 200 || status_code == 201) {
             cJSON *response_json = cJSON_Parse(response_buffer);
             if (response_json) {
                 cJSON *success = cJSON_GetObjectItem(response_json, "success");
